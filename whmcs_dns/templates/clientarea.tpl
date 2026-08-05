@@ -18,13 +18,14 @@
         <h2 class="mb-0">DNS Manager</h2>
     </div>
 
-    <div class="col-auto ms-auto">
+    {if $domainAvailable}<div class="col-auto ms-auto">
         {if $zone}
             <form method="post"
                   action="index.php?m=whmcs_dns&domain={$selectedDomain|escape:'url'}"
                   onsubmit="return confirm('Disable DNS and delete the zone for this domain?');"
                   class="m-0">
                 <input type="hidden" name="action" value="disable_dns" />
+                <input type="hidden" name="token" value="{$token|escape}" />
                 <input type="hidden" name="domain_name" value="{$selectedDomain|escape}" />
                 <button type="submit" class="btn btn-outline-danger">
                     Disable DNS
@@ -35,16 +36,17 @@
                   action="index.php?m=whmcs_dns&domain={$selectedDomain|escape:'url'}"
                   class="m-0">
                 <input type="hidden" name="action" value="enable_dns" />
+                <input type="hidden" name="token" value="{$token|escape}" />
                 <input type="hidden" name="domain_name" value="{$selectedDomain|escape}" />
                 <button type="submit" class="btn btn-outline-primary">
                     Enable DNS
                 </button>
             </form>
         {/if}
-    </div>
+    </div>{/if}
 </div>
 
-{if !$zone}
+{if $domainAvailable && !$zone}
     <div class="alert alert-info mb-3">
         DNS is not enabled for this domain yet. Click <b>Enable DNS</b> to create the zone.
     </div>
@@ -63,6 +65,7 @@
         <form class="mb-4" method="post"
               action="index.php?m=whmcs_dns&domain={$selectedDomain|escape:'url'}">
             <input type="hidden" name="action" value="add_record" />
+            <input type="hidden" name="token" value="{$token|escape}" />
             <input type="hidden" name="domain_name" value="{$zone.domain_name|escape}" />
 
             <div class="row g-3">
@@ -160,6 +163,7 @@
                                 <form class="whmcsdns-update-form m-0" method="post"
                                       action="index.php?m=whmcs_dns&domain={$selectedDomain|escape:'url'}">
                                     <input type="hidden" name="action" value="update_record" />
+                                    <input type="hidden" name="token" value="{$token|escape}" />
                                     <input type="hidden" name="domain_name" value="{$zone.domain_name|escape}" />
                                     <input type="hidden" name="row_id" value="{$r.id}" />
                                     <input type="hidden" name="old_value" value="{$r.value|escape}" />
@@ -200,6 +204,7 @@
                                 <form class="whmcsdns-delete-form d-inline" method="post"
                                       action="index.php?m=whmcs_dns&domain={$selectedDomain|escape:'url'}">
                                     <input type="hidden" name="action" value="delete_record" />
+                                    <input type="hidden" name="token" value="{$token|escape}" />
                                     <input type="hidden" name="domain_name" value="{$zone.domain_name|escape}" />
                                     <input type="hidden" name="row_id" value="{$r.id}" />
 

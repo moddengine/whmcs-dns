@@ -9,6 +9,20 @@ namespace WHMCS\Database {
     }
 }
 
+namespace WHMCS\Authentication {
+    final class CurrentUser
+    {
+        public function client(): ?\WHMCS\User\Client {}
+    }
+}
+
+namespace WHMCS\User {
+    final class Client
+    {
+        public function hasPermission(string|int $permission): bool {}
+    }
+}
+
 namespace Illuminate\Database\Schema {
     final class Blueprint
     {

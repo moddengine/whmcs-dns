@@ -11,6 +11,7 @@
         "phpstan/phpstan": "^2.1"
     },
     "scripts": {
-        "analyse": "phpstan analyse --no-progress"
+        "analyse": "phpstan analyse --no-progress",
+        "test": "php tests/security.php"
     }
 }

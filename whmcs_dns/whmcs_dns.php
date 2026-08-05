@@ -13,10 +13,14 @@ if (!defined("WHMCS")) {
 }
 
 use WHMCS\Database\Capsule;
+use WHMCS\Authentication\CurrentUser;
 use PlexDNS\Service as PlexService;
 
 define('WHMCSDNS_TABLE_ZONES', 'zones');
 define('WHMCSDNS_TABLE_RECORDS', 'records');
+define('WHMCSDNS_TABLE_RATE_LIMITS', 'whmcs_dns_rate_limits');
+define('WHMCSDNS_MUTATION_LIMIT', 30);
+define('WHMCSDNS_MUTATION_WINDOW', 60);
 
 $autoload = __DIR__ . '/vendor/autoload.php';
 if (file_exists($autoload)) {
@@ -35,7 +39,7 @@ function whmcs_dns_config(): array
         'description' => 'DNS management addon enabling zone and record control via external providers',
         'author'      => 'Namingo',
         'language'    => 'english',
-        'version'     => '1.0.0',
+        'version'     => '1.0.1',
         'fields'      => [
             'provider' => [
                 'FriendlyName' => 'Provider',
@@ -118,6 +122,60 @@ function whmcs_dns_config(): array
     ];
 }
 
+function whmcs_dns_create_rate_limit_table(): void
+{
+    if (!Capsule::schema()->hasTable(WHMCSDNS_TABLE_RATE_LIMITS)) {
+        Capsule::schema()->create(WHMCSDNS_TABLE_RATE_LIMITS, function ($table) {
+            /** @var \Illuminate\Database\Schema\Blueprint $table */
+            $table->bigInteger('client_id')->unsigned()->unique();
+            $table->integer('window_started_at');
+            $table->integer('attempts');
+        });
+    }
+}
+
+function whmcs_dns_domain_status_allowed(string $status): bool
+{
+    return $status === 'Active';
+}
+
+function whmcs_dns_rate_limit_reached(int $attempts): bool
+{
+    return $attempts >= WHMCSDNS_MUTATION_LIMIT;
+}
+
+function whmcs_dns_enforce_mutation_limit(int $clientId): void
+{
+    $now = time();
+
+    Capsule::table(WHMCSDNS_TABLE_RATE_LIMITS)->insertOrIgnore([
+        'client_id' => $clientId,
+        'window_started_at' => 0,
+        'attempts' => 0,
+    ]);
+
+    Capsule::connection()->transaction(function () use ($clientId, $now): void {
+        $query = Capsule::table(WHMCSDNS_TABLE_RATE_LIMITS)->where('client_id', $clientId);
+        $limit = $query->lockForUpdate()->first();
+
+        if (!$limit) {
+            throw new RuntimeException('DNS rate limit is unavailable.');
+        }
+
+        $windowStartedAt = (int) $limit->window_started_at;
+        if ($now < $windowStartedAt || $now - $windowStartedAt >= WHMCSDNS_MUTATION_WINDOW) {
+            $query->update(['window_started_at' => $now, 'attempts' => 1]);
+            return;
+        }
+
+        if (whmcs_dns_rate_limit_reached((int) $limit->attempts)) {
+            throw new RuntimeException('Too many DNS changes. Please wait a minute and try again.');
+        }
+
+        $query->increment('attempts');
+    });
+}
+
 /**
  * Create DB tables
  *
@@ -126,6 +184,8 @@ function whmcs_dns_config(): array
 function whmcs_dns_activate(): array
 {
     try {
+        whmcs_dns_create_rate_limit_table();
+
         if (!Capsule::schema()->hasTable(WHMCSDNS_TABLE_ZONES)) {
             Capsule::schema()->create(WHMCSDNS_TABLE_ZONES, function ($table) {
                 /** @var \Illuminate\Database\Schema\Blueprint $table */
@@ -173,6 +233,9 @@ function whmcs_dns_activate(): array
 function whmcs_dns_deactivate(): array
 {
     try {
+        if (Capsule::schema()->hasTable(WHMCSDNS_TABLE_RATE_LIMITS)) {
+            Capsule::schema()->drop(WHMCSDNS_TABLE_RATE_LIMITS);
+        }
         if (Capsule::schema()->hasTable(WHMCSDNS_TABLE_RECORDS)) {
             Capsule::schema()->drop(WHMCSDNS_TABLE_RECORDS);
         }
@@ -189,7 +252,7 @@ function whmcs_dns_deactivate(): array
 /** @param array<string, mixed> $vars */
 function whmcs_dns_upgrade(array $vars): void
 {
-    // Keep for future migrations.
+    whmcs_dns_create_rate_limit_table();
 }
 
 /**
@@ -213,6 +276,24 @@ function whmcs_dns_clientarea(array $vars): array
 
     $clientId = (int) $_SESSION['uid'];
 
+    $currentClient = (new CurrentUser())->client();
+    if (!$currentClient || !$currentClient->hasPermission('managedomains')) {
+        return [
+            'pagetitle'    => 'DNS Manager',
+            'breadcrumb'   => ['index.php?m=whmcs_dns' => 'DNS Manager'],
+            'templatefile' => 'clientarea',
+            'requirelogin' => true,
+            'vars'         => [
+                'message' => ['type' => 'error', 'text' => 'You do not have permission to manage domains.'],
+                'domainAvailable' => false,
+                'clientDomains' => [],
+                'selectedDomain' => '',
+                'zone' => null,
+                'records' => [],
+            ],
+        ];
+    }
+
     $provider = $vars['provider'] ?? '';
     $apikey   = $vars['apikey'] ?? '';
 
@@ -220,6 +301,7 @@ function whmcs_dns_clientarea(array $vars): array
     $clientDomains = Capsule::table('tbldomains')
         ->select('id', 'domain', 'status')
         ->where('userid', $clientId)
+        ->where('status', 'Active')
         ->orderBy('domain', 'asc')
         ->get()
         ->map(function ($d) {
@@ -233,6 +315,20 @@ function whmcs_dns_clientarea(array $vars): array
 
     $selectedDomain = trim((string)($_REQUEST['domain'] ?? ''));
     $message = null;
+
+    $isActiveDomain = function (string $domainName) use ($clientId): bool {
+        $status = Capsule::table('tbldomains')
+            ->where('userid', $clientId)
+            ->where('domain', $domainName)
+            ->value('status');
+
+        return is_string($status) && whmcs_dns_domain_status_allowed($status);
+    };
+
+    $domainAvailable = $selectedDomain !== '' && $isActiveDomain($selectedDomain);
+    if ($selectedDomain !== '' && !$domainAvailable) {
+        $message = ['type' => 'error', 'text' => 'This domain is not active or does not belong to your account.'];
+    }
 
     $pdo = Capsule::connection()->getPdo();
     $plex = new PlexService($pdo);
@@ -255,17 +351,14 @@ function whmcs_dns_clientarea(array $vars): array
         if ($domainName === '') {
             $message = ['type' => 'error', 'text' => 'Domain is required.'];
         } else {
-            // Ownership check: must be in tbldomains for this user
-            $owns = Capsule::table('tbldomains')
-                ->where('userid', $clientId)
-                ->where('domain', $domainName)
-                ->exists();
-            if (!$owns) {
-                $message = ['type' => 'error', 'text' => 'Domain does not exist.'];
+            if (!$isActiveDomain($domainName)) {
+                $message = ['type' => 'error', 'text' => 'Domain is not active or does not belong to your account.'];
             } elseif ($provider === '') {
                 $message = ['type' => 'error', 'text' => 'DNS provider is not configured.'];
             } else {
                 try {
+                    whmcs_dns_enforce_mutation_limit($clientId);
+
                     if ($action === 'enable_dns') {
                         // Create zone explicitly (no silent auto-create)
                         $zone = Capsule::table(WHMCSDNS_TABLE_ZONES)
@@ -590,14 +683,15 @@ function whmcs_dns_clientarea(array $vars): array
         }
 
         // keep domain selected after POST
-        $selectedDomain = $selectedDomain ?: $domainName;
+        $selectedDomain = $domainName;
+        $domainAvailable = $isActiveDomain($selectedDomain);
     }
 
     // Fetch zone + records for selected domain
     $zoneData = null;
     $records = [];
 
-    if ($selectedDomain !== '') {
+    if ($domainAvailable) {
         $zone = Capsule::table(WHMCSDNS_TABLE_ZONES)
             ->where('domain_name', $selectedDomain)
             ->where('client_id', $clientId)
@@ -641,6 +735,7 @@ function whmcs_dns_clientarea(array $vars): array
         $domainId = (int) Capsule::table('tbldomains')
             ->where('userid', $clientId)
             ->where('domain', $selectedDomain)
+            ->where('status', 'Active')
             ->value('id');
 
         if ($domainId > 0) {
@@ -661,6 +756,7 @@ function whmcs_dns_clientarea(array $vars): array
             'message'        => $message,
             'clientDomains'  => $clientDomains,
             'selectedDomain' => $selectedDomain,
+            'domainAvailable' => $domainAvailable,
             'zone'           => $zoneData,
             'records'        => $records,
         ],

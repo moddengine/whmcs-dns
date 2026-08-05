@@ -13,6 +13,7 @@ if (!defined("WHMCS")) {
 }
 
 use WHMCS\Database\Capsule;
+use WHMCS\Authentication\CurrentUser;
 
 add_hook('ClientAreaSecondarySidebar', 1, function ($sidebar) {
     static $injected = false;
@@ -22,6 +23,11 @@ add_hook('ClientAreaSecondarySidebar', 1, function ($sidebar) {
     $injected = true;
 
     if (empty($_SESSION['uid'])) {
+        return;
+    }
+
+    $currentClient = (new CurrentUser())->client();
+    if (!$currentClient || !$currentClient->hasPermission('managedomains')) {
         return;
     }
 
@@ -57,6 +63,7 @@ add_hook('ClientAreaSecondarySidebar', 1, function ($sidebar) {
         ->select('domain')
         ->where('id', $domainId)
         ->where('userid', $clientId)
+        ->where('status', 'Active')
         ->first();
 
     if (!$domain || empty($domain->domain)) {
