@@ -25,8 +25,10 @@ if (file_exists($autoload)) {
 
 /**
  * Addon module config
+ *
+ * @return array<string, mixed>
  */
-function whmcs_dns_config()
+function whmcs_dns_config(): array
 {
     return [
         'name'        => 'DNS Hosting',
@@ -118,8 +120,10 @@ function whmcs_dns_config()
 
 /**
  * Create DB tables
+ *
+ * @return array<string, string>
  */
-function whmcs_dns_activate()
+function whmcs_dns_activate(): array
 {
     try {
         if (!Capsule::schema()->hasTable(WHMCSDNS_TABLE_ZONES)) {
@@ -163,8 +167,10 @@ function whmcs_dns_activate()
 
 /**
  * Drop tables
+ *
+ * @return array<string, string>
  */
-function whmcs_dns_deactivate()
+function whmcs_dns_deactivate(): array
 {
     try {
         if (Capsule::schema()->hasTable(WHMCSDNS_TABLE_RECORDS)) {
@@ -180,15 +186,19 @@ function whmcs_dns_deactivate()
     }
 }
 
-function whmcs_dns_upgrade($vars)
+/** @param array<string, mixed> $vars */
+function whmcs_dns_upgrade(array $vars): void
 {
     // Keep for future migrations.
 }
 
 /**
  * Client area page
+ *
+ * @param array<string, mixed> $vars
+ * @return array<string, mixed>
  */
-function whmcs_dns_clientarea($vars)
+function whmcs_dns_clientarea(array $vars): array
 {
     // Ensure client is logged in
     if (empty($_SESSION['uid'])) {

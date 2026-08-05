@@ -1,0 +1,7 @@
+parameters:
+    level: 6
+    paths:
+        - hooks.php
+        - whmcs_dns.php
+    scanFiles:
+        - stubs/whmcs.php
