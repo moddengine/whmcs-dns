@@ -70,13 +70,16 @@
 
             <div class="row g-3">
                 <div class="col-md-2">
-                    <select class="form-control" name="record_type" required>
+                    <select class="form-control" name="record_type" required onchange="whmcsDnsToggleSrvFields(this);">
                         <option value="" disabled selected>Select Type</option>
                         <option value="A">A</option>
                         <option value="AAAA">AAAA</option>
                         <option value="CNAME">CNAME</option>
                         <option value="MX">MX</option>
                         <option value="TXT">TXT</option>
+                        <option value="RDR">RDR (URL Redirect)</option>
+                        <option value="NS">NS</option>
+                        <option value="SRV">SRV</option>
                         <option value="SPF">SPF</option>
                         <option value="DS">DS</option>
                     </select>
@@ -95,7 +98,15 @@
                 </div>
 
                 <div class="col-sm">
-                    <input type="number" class="form-control" placeholder="Priority" name="record_priority">
+                    <input type="number" class="form-control" placeholder="Priority" name="record_priority" min="0" max="65535">
+                </div>
+
+                <div class="col-sm whmcsdns-srv-only" hidden>
+                    <input type="number" class="form-control" placeholder="Weight" name="record_weight" min="0" max="65535" disabled>
+                </div>
+
+                <div class="col-sm whmcsdns-srv-only" hidden>
+                    <input type="number" class="form-control" placeholder="Port" name="record_port" min="0" max="65535" disabled>
                 </div>
 
                 <div class="col-md-auto d-flex align-items-end">
@@ -170,7 +181,7 @@
                                     <input type="hidden" name="record_type" value="{$r.type|escape}" />
                                     <input type="hidden" name="record_name" value="{$r.host|escape}" />
 
-                                    <input type="text" class="form-control" placeholder="127.0.0.1"
+                                    <input type="text" class="form-control" placeholder="{if $dns_type == 'SRV'}target.example.com.{else}127.0.0.1{/if}"
                                            name="record_value" value="{$r.value|escape}" required />
                             </td>
 
@@ -182,7 +193,14 @@
                             <td>
                                     {if $dns_type == 'MX'}
                                         <input type="number" class="form-control" placeholder="Priority"
-                                               name="record_priority" value="{$r.priority|escape}" />
+                                               name="record_priority" min="0" max="65535" value="{$r.priority|escape}" />
+                                    {elseif $dns_type == 'SRV'}
+                                        <input type="number" class="form-control" placeholder="Priority"
+                                               name="record_priority" min="0" max="65535" value="{$r.priority|escape}" required />
+                                        <input type="number" class="form-control mt-1" placeholder="Weight"
+                                               name="record_weight" min="0" max="65535" value="{$r.weight|escape}" required />
+                                        <input type="number" class="form-control mt-1" placeholder="Port"
+                                               name="record_port" min="0" max="65535" value="{$r.port|escape}" required />
                                     {else}
                                         <input type="number" class="form-control" placeholder="-"
                                                name="record_priority" value="" />
@@ -230,6 +248,27 @@
 </div>
 
 <script>
+function whmcsDnsToggleSrvFields(select) {
+    var form = select.closest('form');
+    var isSrv = select.value === 'SRV';
+    var priority = form.querySelector('[name="record_priority"]');
+    var value = form.querySelector('[name="record_value"]');
+
+    priority.required = isSrv;
+    value.placeholder = isSrv ? 'target.example.com.' : '127.0.0.1';
+
+    form.querySelectorAll('.whmcsdns-srv-only').forEach(function (container) {
+        var input = container.querySelector('input');
+        container.hidden = !isSrv;
+        input.disabled = !isSrv;
+        input.required = isSrv;
+    });
+}
+
+document.querySelectorAll('select[name="record_type"]').forEach(function (select) {
+    whmcsDnsToggleSrvFields(select);
+});
+
 function whmcsDnsConfirmDelete(btn) {
     var form = btn.closest('form');
     if (!form) return;

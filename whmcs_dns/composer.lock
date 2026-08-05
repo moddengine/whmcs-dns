@@ -1055,12 +1055,12 @@
             "source": {
                 "type": "git",
                 "url": "https://github.com/moddengine/plexdns.git",
-                "reference": "0534367107b95b77fbd36748c5886cd441d49386"
+                "reference": "b812e0463e8e617c67fa63cf9753a5db9b9741aa"
             },
             "dist": {
                 "type": "zip",
-                "url": "https://api.github.com/repos/moddengine/plexdns/zipball/0534367107b95b77fbd36748c5886cd441d49386",
-                "reference": "0534367107b95b77fbd36748c5886cd441d49386",
+                "url": "https://api.github.com/repos/moddengine/plexdns/zipball/b812e0463e8e617c67fa63cf9753a5db9b9741aa",
+                "reference": "b812e0463e8e617c67fa63cf9753a5db9b9741aa",
                 "shasum": ""
             },
             "require": {
@@ -1105,7 +1105,7 @@
             "support": {
                 "source": "https://github.com/moddengine/plexdns/tree/fix/bunny-zone-record-ids"
             },
-            "time": "2026-08-05T08:31:20+00:00"
+            "time": "2026-08-05T09:27:38+00:00"
         },
         {
             "name": "nikic/php-parser",

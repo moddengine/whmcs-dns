@@ -39,7 +39,7 @@ function whmcs_dns_config(): array
         'description' => 'DNS management addon enabling zone and record control via external providers',
         'author'      => 'Namingo',
         'language'    => 'english',
-        'version'     => '1.0.1',
+        'version'     => '1.0.2',
         'fields'      => [
             'provider' => [
                 'FriendlyName' => 'Provider',
@@ -134,6 +134,35 @@ function whmcs_dns_create_rate_limit_table(): void
     }
 }
 
+function whmcs_dns_add_srv_columns(): void
+{
+    if (!Capsule::schema()->hasTable(WHMCSDNS_TABLE_RECORDS)) {
+        return;
+    }
+
+    foreach (['weight', 'port'] as $column) {
+        if (!Capsule::schema()->hasColumn(WHMCSDNS_TABLE_RECORDS, $column)) {
+            Capsule::schema()->table(WHMCSDNS_TABLE_RECORDS, function ($table) use ($column) {
+                /** @var \Illuminate\Database\Schema\Blueprint $table */
+                $table->integer($column)->nullable();
+            });
+        }
+    }
+}
+
+function whmcs_dns_srv_number(mixed $value, string $field): int
+{
+    $number = filter_var($value, FILTER_VALIDATE_INT, [
+        'options' => ['min_range' => 0, 'max_range' => 65535],
+    ]);
+
+    if ($number === false) {
+        throw new InvalidArgumentException("SRV {$field} must be between 0 and 65535.");
+    }
+
+    return $number;
+}
+
 function whmcs_dns_domain_status_allowed(string $status): bool
 {
     return $status === 'Active';
@@ -211,6 +240,8 @@ function whmcs_dns_activate(): array
                 $table->text('value');
                 $table->integer('ttl')->nullable();
                 $table->integer('priority')->nullable();
+                $table->integer('weight')->nullable();
+                $table->integer('port')->nullable();
                 $table->dateTime('created_at')->useCurrent();
                 $table->dateTime('updated_at')->useCurrent()->useCurrentOnUpdate();
 
@@ -253,6 +284,7 @@ function whmcs_dns_deactivate(): array
 function whmcs_dns_upgrade(array $vars): void
 {
     whmcs_dns_create_rate_limit_table();
+    whmcs_dns_add_srv_columns();
 }
 
 /**
@@ -460,6 +492,8 @@ function whmcs_dns_clientarea(array $vars): array
                         $ttl         = isset($_POST['record_ttl']) ? (int)$_POST['record_ttl'] : 3600;
                         $priority    = (isset($_POST['record_priority']) && $_POST['record_priority'] !== '')
                             ? (int)$_POST['record_priority'] : null;
+                        $weight = null;
+                        $port = null;
 
                         if ($recordType === '' || $recordValue === '') {
                             throw new Exception('Record type and value are required.');
@@ -467,6 +501,12 @@ function whmcs_dns_clientarea(array $vars): array
 
                         if ($recordType === 'MX' && $priority === null) {
                             $priority = 0;
+                        }
+
+                        if ($recordType === 'SRV') {
+                            $priority = whmcs_dns_srv_number($_POST['record_priority'] ?? null, 'priority');
+                            $weight = whmcs_dns_srv_number($_POST['record_weight'] ?? null, 'weight');
+                            $port = whmcs_dns_srv_number($_POST['record_port'] ?? null, 'port');
                         }
 
                         if ($recordType === 'TXT') {
@@ -495,6 +535,8 @@ function whmcs_dns_clientarea(array $vars): array
                             'record_value'     => $recordValue,
                             'record_ttl'       => $ttl,
                             'record_priority'  => $priority,
+                            'record_weight'    => $weight,
+                            'record_port'      => $port,
                             'provider'         => $provider,
                             'apikey'           => $apikey,
                         ];
@@ -513,7 +555,11 @@ function whmcs_dns_clientarea(array $vars): array
                             }
                         }
 
-                        $plex->addRecord($req);
+                        $rowId = $plex->addRecord($req);
+                        Capsule::table(WHMCSDNS_TABLE_RECORDS)->where('id', $rowId)->update([
+                            'weight' => $weight,
+                            'port' => $port,
+                        ]);
 
                         $message = ['type' => 'success', 'text' => 'Record added.'];
                     }
@@ -526,6 +572,8 @@ function whmcs_dns_clientarea(array $vars): array
                         $ttl         = isset($_POST['record_ttl']) ? (int)$_POST['record_ttl'] : 3600;
                         $priority    = (isset($_POST['record_priority']) && $_POST['record_priority'] !== '')
                             ? (int)$_POST['record_priority'] : null;
+                        $weight = null;
+                        $port = null;
 
                         if ($rowId <= 0) {
                             throw new Exception('Invalid record row id.');
@@ -533,6 +581,12 @@ function whmcs_dns_clientarea(array $vars): array
                         
                         if ($recordType === 'MX' && $priority === null) {
                             $priority = 0;
+                        }
+
+                        if ($recordType === 'SRV') {
+                            $priority = whmcs_dns_srv_number($_POST['record_priority'] ?? null, 'priority');
+                            $weight = whmcs_dns_srv_number($_POST['record_weight'] ?? null, 'weight');
+                            $port = whmcs_dns_srv_number($_POST['record_port'] ?? null, 'port');
                         }
 
                         if ($recordType === 'TXT') {
@@ -583,13 +637,15 @@ function whmcs_dns_clientarea(array $vars): array
 
                         $req = [
                             'domain_name'      => $domainName,
-                            'record_id'        => $recordId,
+                            'record_id'        => $rowId,
                             'record_name'      => $recordName,
                             'record_type'      => $recordType,
                             'record_value'     => $recordValue,
                             'old_value'        => $oldValue,
                             'record_ttl'       => $ttl,
                             'record_priority'  => $priority,
+                            'record_weight'    => $weight,
+                            'record_port'      => $port,
                             'provider'         => $provider,
                             'apikey'           => $apikey,
                         ];
@@ -609,6 +665,10 @@ function whmcs_dns_clientarea(array $vars): array
                         }
 
                         $plex->updateRecord($req);
+                        Capsule::table(WHMCSDNS_TABLE_RECORDS)->where('id', $rowId)->update([
+                            'weight' => $weight,
+                            'port' => $port,
+                        ]);
 
                         $message = ['type' => 'success', 'text' => 'Record updated.'];
                     }
@@ -650,7 +710,7 @@ function whmcs_dns_clientarea(array $vars): array
 
                         $req = [
                             'domain_name'      => $domainName,
-                            'record_id'        => $recordId,
+                            'record_id'        => $rowId,
                             'record_name'      => (string)$rec->host,
                             'record_type'      => strtoupper((string)$rec->type),
                             'record_value'     => (string)$rec->value,
@@ -707,7 +767,7 @@ function whmcs_dns_clientarea(array $vars): array
             ];
 
             $records = Capsule::table(WHMCSDNS_TABLE_RECORDS)
-                ->select('id', 'type', 'host', 'value', 'ttl', 'priority', 'recordId')
+                ->select('id', 'type', 'host', 'value', 'ttl', 'priority', 'weight', 'port', 'recordId')
                 ->where('domain_id', $zone->id)
                 ->orderBy('type', 'asc')
                 ->orderBy('host', 'asc')
@@ -720,6 +780,8 @@ function whmcs_dns_clientarea(array $vars): array
                         'value'    => (string)$r->value,
                         'ttl'      => $r->ttl !== null ? (int)$r->ttl : null,
                         'priority' => $r->priority !== null ? (int)$r->priority : null,
+                        'weight'   => $r->weight !== null ? (int)$r->weight : null,
+                        'port'     => $r->port !== null ? (int)$r->port : null,
                         'recordId' => (string)($r->recordId ?? ''),
                     ];
                 })
