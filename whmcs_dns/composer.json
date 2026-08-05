@@ -1,6 +1,12 @@
 {
+    "repositories": [
+        {
+            "type": "vcs",
+            "url": "https://github.com/moddengine/plexdns"
+        }
+    ],
     "require": {
-        "namingo/plexdns": "^1.0"
+        "namingo/plexdns": "dev-fix/bunny-zone-record-ids"
     },
     "config": {
         "allow-plugins": {
