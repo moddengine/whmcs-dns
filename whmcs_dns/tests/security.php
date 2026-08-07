@@ -74,6 +74,11 @@ if ($template === false || substr_count($template, '<form') !== substr_count($te
     throw new RuntimeException('Every POST form must submit a WHMCS token.');
 }
 
+if (!str_contains($template, 'name="action" value="sync_records"')
+    || !str_contains($template, 'Sync Records')) {
+    throw new RuntimeException('Bunny record sync control is missing.');
+}
+
 foreach (['record_priority', 'record_weight', 'record_port'] as $field) {
     if (!str_contains($template, 'name="' . $field . '"')) {
         throw new RuntimeException("Missing SRV {$field} field.");

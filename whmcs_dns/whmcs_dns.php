@@ -727,6 +727,15 @@ function whmcs_dns_clientarea(array $vars): array
                         }
                     }
 
+                    if ($action === 'sync_records') {
+                        if (!$getZone($domainName)) {
+                            throw new RuntimeException('DNS is not enabled for this domain.');
+                        }
+
+                        $count = whmcs_dns_refresh_bunny_zone($domainName, $apikey);
+                        $message = ['type' => 'success', 'text' => "Synced {$count} records from Bunny."];
+                    }
+
                     if ($action === 'add_record') {
                         $recordName  = (string)($_POST['record_name'] ?? '');
                         $recordType  = strtoupper((string)($_POST['record_type'] ?? ''));

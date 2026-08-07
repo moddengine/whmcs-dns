@@ -18,8 +18,20 @@
         <h2 class="mb-0">DNS Manager</h2>
     </div>
 
-    {if $domainAvailable}<div class="col-auto ms-auto">
+    {if $domainAvailable}<div class="col-auto ms-auto d-flex gap-2">
         {if $zone}
+            {if $zone.config.provider == 'Bunny'}
+                <form method="post"
+                      action="index.php?m=whmcs_dns&domain={$selectedDomain|escape:'url'}"
+                      class="m-0">
+                    <input type="hidden" name="action" value="sync_records" />
+                    <input type="hidden" name="token" value="{$token|escape}" />
+                    <input type="hidden" name="domain_name" value="{$selectedDomain|escape}" />
+                    <button type="submit" class="btn btn-outline-primary">
+                        Sync Records
+                    </button>
+                </form>
+            {/if}
             <form method="post"
                   action="index.php?m=whmcs_dns&domain={$selectedDomain|escape:'url'}"
                   onsubmit="return confirm('Disable DNS and delete the zone for this domain?');"
