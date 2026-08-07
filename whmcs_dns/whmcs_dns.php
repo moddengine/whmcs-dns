@@ -13,8 +13,8 @@ if (!defined("WHMCS")) {
 }
 
 use WHMCS\Database\Capsule;
-use WHMCS\Authentication\CurrentUser;
 use PlexDNS\Service as PlexService;
+use PlexDNS\Providers\Bunny as BunnyProvider;
 
 define('WHMCSDNS_TABLE_ZONES', 'zones');
 define('WHMCSDNS_TABLE_RECORDS', 'records');
@@ -26,6 +26,7 @@ $autoload = __DIR__ . '/vendor/autoload.php';
 if (file_exists($autoload)) {
     require_once $autoload;
 }
+require_once __DIR__ . '/permissions.php';
 
 /**
  * Addon module config
@@ -65,6 +66,20 @@ function whmcs_dns_config(): array
                 'Size'         => '50',
                 'Default'      => '',
                 'Description'  => "Enter your DNS provider's API key. Keep it confidential and ensure it's valid for requests.",
+            ],
+
+            'refresh_api_token_hash' => [
+                'FriendlyName' => 'Refresh API Token SHA-256',
+                'Type'         => 'text',
+                'Size'         => '64',
+                'Default'      => '',
+                'Description'  => 'SHA-256 hash of the bearer token allowed to call refresh.php. Leave blank to disable the API.',
+            ],
+
+            'apply_custom_nameservers' => [
+                'FriendlyName' => 'Apply Custom Nameservers',
+                'Type'         => 'yesno',
+                'Description'  => 'Configure new Bunny DNS zones to use NS1 and NS2 below.',
             ],
 
             'soa_email' => [
@@ -161,6 +176,196 @@ function whmcs_dns_srv_number(mixed $value, string $field): int
     }
 
     return $number;
+}
+
+/** @return array{CustomNameserversEnabled: true, Nameserver1: string, Nameserver2: string} */
+function whmcs_dns_bunny_nameserver_payload(string $ns1, string $ns2): array
+{
+    $ns1 = strtolower(rtrim(trim($ns1), '.'));
+    $ns2 = strtolower(rtrim(trim($ns2), '.'));
+
+    foreach (['NS1' => $ns1, 'NS2' => $ns2] as $label => $hostname) {
+        if ($hostname === '' || filter_var($hostname, FILTER_VALIDATE_DOMAIN, FILTER_FLAG_HOSTNAME) === false) {
+            throw new InvalidArgumentException("{$label} must be a valid nameserver hostname.");
+        }
+    }
+    if ($ns1 === $ns2) {
+        throw new InvalidArgumentException('NS1 and NS2 must be different hostnames.');
+    }
+
+    return [
+        'CustomNameserversEnabled' => true,
+        'Nameserver1' => $ns1,
+        'Nameserver2' => $ns2,
+    ];
+}
+
+function whmcs_dns_apply_bunny_nameservers(string $apiKey, string $zoneId, string $ns1, string $ns2): void
+{
+    if (!ctype_digit($zoneId) || (int) $zoneId < 1) {
+        throw new RuntimeException('Bunny zone ID is missing or invalid.');
+    }
+
+    $payload = json_encode(
+        whmcs_dns_bunny_nameserver_payload($ns1, $ns2),
+        JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR
+    );
+    $curl = curl_init('https://api.bunny.net/dnszone/' . $zoneId);
+    if ($curl === false) {
+        throw new RuntimeException('Could not initialize the Bunny nameserver request.');
+    }
+
+    curl_setopt_array($curl, [
+        CURLOPT_CUSTOMREQUEST => 'POST',
+        CURLOPT_POSTFIELDS => $payload,
+        CURLOPT_HTTPHEADER => ['AccessKey: ' . $apiKey, 'Content-Type: application/json'],
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_CONNECTTIMEOUT => 10,
+        CURLOPT_TIMEOUT => 30,
+    ]);
+    $response = curl_exec($curl);
+    $status = (int) curl_getinfo($curl, CURLINFO_RESPONSE_CODE);
+    $error = curl_error($curl);
+    curl_close($curl);
+
+    if ($response === false) {
+        throw new RuntimeException('Bunny nameserver request failed: ' . $error);
+    }
+    if ($status < 200 || $status >= 300) {
+        throw new RuntimeException("Bunny rejected the custom nameservers (HTTP {$status}).");
+    }
+}
+
+function whmcs_dns_bunny_zone_note(string $domainName, string $zoneFile): string
+{
+    if (trim($zoneFile) === '') {
+        throw new RuntimeException('Bunny returned an empty zone export; the zone was not deleted.');
+    }
+
+    $note = "DNS ZONE for {$domainName}\n"
+        . 'Exported from Bunny before deletion at ' . gmdate('c') . "\n\n"
+        . $zoneFile;
+    if (strlen($note) > 60000) {
+        throw new RuntimeException('The zone export is too large for a WHMCS client note; the zone was not deleted.');
+    }
+
+    return $note;
+}
+
+function whmcs_dns_save_bunny_zone_note(
+    int $clientId,
+    string $domainName,
+    string $apiKey,
+    string $zoneId
+): void {
+    $provider = new BunnyProvider([
+        'apikey' => $apiKey,
+        'domain_name' => $domainName,
+        'zone_id' => $zoneId,
+    ]);
+    $zoneFile = (string) $provider->exportDomainAsZonefile($domainName);
+
+    /** @var array<string, mixed> $result */
+    $result = localAPI('AddClientNote', [
+        'userid' => $clientId,
+        'notes' => whmcs_dns_bunny_zone_note($domainName, $zoneFile),
+        'sticky' => false,
+    ]);
+    if (($result['result'] ?? null) !== 'success') {
+        throw new RuntimeException('Could not save the DNS zone export to the client notes; the zone was not deleted.');
+    }
+}
+
+function whmcs_dns_refresh_token_valid(string $authorization, string $configuredHash): bool
+{
+    if (!preg_match('/^Bearer\s+(\S+)$/i', trim($authorization), $matches)
+        || !preg_match('/^[a-f0-9]{64}$/i', $configuredHash)) {
+        return false;
+    }
+
+    return hash_equals(strtolower($configuredHash), hash('sha256', $matches[1]));
+}
+
+/**
+ * @param array<int, mixed> $records
+ * @return array<int, array<string, int|string|null>>
+ */
+function whmcs_dns_normalize_bunny_records(array $records): array
+{
+    $types = [
+        0 => 'A', 1 => 'AAAA', 2 => 'CNAME', 3 => 'TXT', 4 => 'MX', 5 => 'RDR',
+        8 => 'SRV', 9 => 'CAA', 12 => 'NS', 13 => 'SVCB', 14 => 'HTTPS', 15 => 'TLSA',
+    ];
+    $rows = [];
+
+    foreach ($records as $record) {
+        if (!is_array($record) || !isset($record['Id'], $record['Type']) || !is_numeric($record['Id'])) {
+            throw new RuntimeException('Bunny returned an invalid DNS record.');
+        }
+
+        $typeId = (int) $record['Type'];
+        if (!isset($types[$typeId])) {
+            throw new RuntimeException("Bunny returned unsupported record type {$typeId}.");
+        }
+
+        $rows[] = [
+            'recordId' => (string) $record['Id'],
+            'type' => $types[$typeId],
+            'host' => (string) ($record['Name'] ?? ''),
+            'value' => (string) ($record['Value'] ?? ''),
+            'ttl' => isset($record['Ttl']) ? (int) $record['Ttl'] : null,
+            'priority' => isset($record['Priority']) ? (int) $record['Priority'] : null,
+            'weight' => isset($record['Weight']) ? (int) $record['Weight'] : null,
+            'port' => isset($record['Port']) ? (int) $record['Port'] : null,
+        ];
+    }
+
+    return $rows;
+}
+
+function whmcs_dns_refresh_bunny_zone(string $domainName, string $apiKey): int
+{
+    $domainName = strtolower(rtrim(trim($domainName), '.'));
+    if ($domainName === '' || strlen($domainName) > 253) {
+        throw new InvalidArgumentException('A valid domain is required.');
+    }
+
+    $zone = Capsule::table(WHMCSDNS_TABLE_ZONES)->where('domain_name', $domainName)->first();
+    if (!$zone) {
+        throw new InvalidArgumentException('Zone not found.');
+    }
+
+    $config = json_decode((string) $zone->config, true);
+    if (!is_array($config) || ($config['provider'] ?? null) !== 'Bunny' || empty($zone->zoneId)) {
+        throw new InvalidArgumentException('Zone is not a Bunny DNS zone.');
+    }
+
+    $provider = new BunnyProvider([
+        'apikey' => $apiKey,
+        'domain_name' => $domainName,
+        'zone_id' => (string) $zone->zoneId,
+    ]);
+    $rows = whmcs_dns_normalize_bunny_records($provider->retrieveAllRRsets($domainName));
+    $now = date('Y-m-d H:i:s');
+
+    Capsule::connection()->transaction(function () use ($zone, $rows, $now): void {
+        $lockedZone = Capsule::table(WHMCSDNS_TABLE_ZONES)->where('id', $zone->id)->lockForUpdate()->first();
+        if (!$lockedZone) {
+            throw new RuntimeException('Zone was removed while it was being refreshed.');
+        }
+
+        Capsule::table(WHMCSDNS_TABLE_RECORDS)->where('domain_id', $zone->id)->delete();
+        foreach ($rows as $row) {
+            Capsule::table(WHMCSDNS_TABLE_RECORDS)->insert($row + [
+                'domain_id' => (int) $zone->id,
+                'created_at' => $now,
+                'updated_at' => $now,
+            ]);
+        }
+        Capsule::table(WHMCSDNS_TABLE_ZONES)->where('id', $zone->id)->update(['updated_at' => $now]);
+    });
+
+    return count($rows);
 }
 
 function whmcs_dns_domain_status_allowed(string $status): bool
@@ -308,8 +513,7 @@ function whmcs_dns_clientarea(array $vars): array
 
     $clientId = (int) $_SESSION['uid'];
 
-    $currentClient = (new CurrentUser())->client();
-    if (!$currentClient || !$currentClient->hasPermission('managedomains')) {
+    if (!whmcs_dns_can_manage_domains($clientId)) {
         return [
             'pagetitle'    => 'DNS Manager',
             'breadcrumb'   => ['index.php?m=whmcs_dns' => 'DNS Manager'],
@@ -398,8 +602,18 @@ function whmcs_dns_clientarea(array $vars): array
                             ->where('client_id', $clientId)
                             ->first();
 
+                        $applyCustomNameservers = $provider === 'Bunny'
+                            && ($vars['apply_custom_nameservers'] ?? '') === 'on';
+                        if ($applyCustomNameservers) {
+                            // Validate before creating a zone so bad addon configuration cannot leave an orphan.
+                            whmcs_dns_bunny_nameserver_payload(
+                                (string) ($vars['ns1'] ?? ''),
+                                (string) ($vars['ns2'] ?? '')
+                            );
+                        }
+
                         if ($zone) {
-                            $message = ['type' => 'success', 'text' => 'DNS is already enabled for this domain.'];
+                            $messageText = 'DNS is already enabled for this domain.';
                         } else {
                             $cfg = [
                                 'domain_name' => $domainName,
@@ -438,10 +652,29 @@ function whmcs_dns_clientarea(array $vars): array
                                     'created_at'  => date('Y-m-d H:i:s'),
                                     'updated_at'  => date('Y-m-d H:i:s'),
                                 ]);
+                                $zone = Capsule::table(WHMCSDNS_TABLE_ZONES)
+                                    ->where('domain_name', $domainName)
+                                    ->where('client_id', $clientId)
+                                    ->first();
                             }
 
-                            $message = ['type' => 'success', 'text' => 'DNS enabled. Zone created.'];
+                            $messageText = 'DNS enabled. Zone created.';
                         }
+
+                        if ($applyCustomNameservers) {
+                            if (!$zone) {
+                                throw new RuntimeException('Zone was created but its local configuration is missing.');
+                            }
+                            whmcs_dns_apply_bunny_nameservers(
+                                $apikey,
+                                (string) ($zone->zoneId ?? ''),
+                                (string) ($vars['ns1'] ?? ''),
+                                (string) ($vars['ns2'] ?? '')
+                            );
+                            $messageText .= ' Custom nameservers applied.';
+                        }
+
+                        $message = ['type' => 'success', 'text' => $messageText];
                     }
 
                     if ($action === 'disable_dns') {
@@ -472,6 +705,15 @@ function whmcs_dns_clientarea(array $vars): array
                                     $k = 'ns' . $i;
                                     if (!empty($vars[$k])) $cfg[$k] = $vars[$k];
                                 }
+                            }
+
+                            if ($provider === 'Bunny') {
+                                whmcs_dns_save_bunny_zone_note(
+                                    $clientId,
+                                    $domainName,
+                                    $apikey,
+                                    (string) ($zone->zoneId ?? '')
+                                );
                             }
 
                             $plex->deleteDomain([

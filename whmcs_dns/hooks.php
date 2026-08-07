@@ -13,7 +13,8 @@ if (!defined("WHMCS")) {
 }
 
 use WHMCS\Database\Capsule;
-use WHMCS\Authentication\CurrentUser;
+
+require_once __DIR__ . '/permissions.php';
 
 add_hook('ClientAreaSecondarySidebar', 1, function ($sidebar) {
     static $injected = false;
@@ -26,8 +27,8 @@ add_hook('ClientAreaSecondarySidebar', 1, function ($sidebar) {
         return;
     }
 
-    $currentClient = (new CurrentUser())->client();
-    if (!$currentClient || !$currentClient->hasPermission('managedomains')) {
+    $clientId = (int) $_SESSION['uid'];
+    if (!whmcs_dns_can_manage_domains($clientId)) {
         return;
     }
 
@@ -56,8 +57,6 @@ add_hook('ClientAreaSecondarySidebar', 1, function ($sidebar) {
     if ($domainId <= 0) {
         return;
     }
-
-    $clientId = (int) $_SESSION['uid'];
 
     $domain = Capsule::table('tbldomains')
         ->select('domain')

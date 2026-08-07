@@ -3,7 +3,7 @@
   "type": "addon",
   "name": "whmcs_dns",
   "displayName": "DNS hosting module",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "license": "MIT",
   "author": {
     "name": "Namingo",
@@ -25,7 +25,7 @@
       "min": "8.13"
     },
     "php": {
-      "min": "8.1"
+      "min": "8.3"
     }
   },
   "keywords": [
