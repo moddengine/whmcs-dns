@@ -59,6 +59,12 @@ try {
     }
 }
 
+if (!whmcs_dns_bunny_empty_export_is_expected([])
+    || !whmcs_dns_bunny_empty_export_is_expected([['type' => 'RDR']])
+    || whmcs_dns_bunny_empty_export_is_expected([['type' => 'A']])) {
+    throw new RuntimeException('Bunny empty zone export record policy failed.');
+}
+
 if (whmcs_dns_srv_number('0', 'weight') !== 0 || whmcs_dns_srv_number('65535', 'port') !== 65535) {
     throw new RuntimeException('SRV field boundary failed.');
 }

@@ -252,6 +252,18 @@ function whmcs_dns_bunny_zone_note(string $domainName, string $zoneFile): string
     return $note;
 }
 
+/** @param array<int, array<string, int|string|null>> $records */
+function whmcs_dns_bunny_empty_export_is_expected(array $records): bool
+{
+    foreach ($records as $record) {
+        if (($record['type'] ?? null) !== 'RDR') {
+            return false;
+        }
+    }
+
+    return true;
+}
+
 function whmcs_dns_save_bunny_zone_note(
     int $clientId,
     string $domainName,
@@ -264,6 +276,11 @@ function whmcs_dns_save_bunny_zone_note(
         'zone_id' => $zoneId,
     ]);
     $zoneFile = (string) $provider->exportDomainAsZonefile($domainName);
+    if (trim($zoneFile) === '' && whmcs_dns_bunny_empty_export_is_expected(
+        whmcs_dns_normalize_bunny_records($provider->retrieveAllRRsets($domainName))
+    )) {
+        return;
+    }
 
     /** @var array<string, mixed> $result */
     $result = localAPI('AddClientNote', [
