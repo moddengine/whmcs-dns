@@ -14,7 +14,41 @@ if (!defined("WHMCS")) {
 
 use WHMCS\Database\Capsule;
 
+$autoload = __DIR__ . '/vendor/autoload.php';
+if (file_exists($autoload)) {
+    require_once $autoload;
+}
 require_once __DIR__ . '/permissions.php';
+
+add_hook('ClientAreaProductDetailsOutput', 1, function ($service) {
+    if (empty($_SESSION['uid']) || !is_object($service)) {
+        return '';
+    }
+
+    $clientId = (int) $_SESSION['uid'];
+    if (!whmcs_dns_can_manage_domains($clientId)) {
+        return '';
+    }
+
+    $product = Capsule::table('tblhosting')
+        ->select('domain', 'domainstatus')
+        ->where('id', (int) ($service->id ?? 0))
+        ->where('userid', $clientId)
+        ->first();
+    if (!$product || $product->domainstatus !== 'Active') {
+        return '';
+    }
+
+    $domainName = whmcs_dns_registrable_domain((string) $product->domain);
+    if ($domainName === null) {
+        return '';
+    }
+
+    $url = 'index.php?m=whmcs_dns&domain=' . urlencode($domainName);
+    return '<a class="btn btn-primary" href="'
+        . htmlspecialchars($url, ENT_QUOTES, 'UTF-8')
+        . '"><i class="fas fa-globe" aria-hidden="true"></i> Manage DNS</a>';
+});
 
 add_hook('ClientAreaSecondarySidebar', 1, function ($sidebar) {
     static $injected = false;

@@ -7,6 +7,22 @@ if (!whmcs_dns_domain_status_allowed('Active') || whmcs_dns_domain_status_allowe
     throw new RuntimeException('Domain status policy failed.');
 }
 
+foreach ([
+    'portal.site.com' => 'site.com',
+    'staff.company.co.nz' => 'company.co.nz',
+    'WWW.Example.COM.' => 'example.com',
+] as $hostname => $expected) {
+    if (whmcs_dns_registrable_domain($hostname) !== $expected) {
+        throw new RuntimeException("Registrable domain parsing failed for {$hostname}.");
+    }
+}
+
+foreach (['', 'not a domain', '192.0.2.1', 'co.nz'] as $hostname) {
+    if (whmcs_dns_registrable_domain($hostname) !== null) {
+        throw new RuntimeException("Invalid registrable domain accepted: {$hostname}.");
+    }
+}
+
 if (whmcs_dns_rate_limit_reached(29) || !whmcs_dns_rate_limit_reached(30)) {
     throw new RuntimeException('Mutation rate limit boundary failed.');
 }

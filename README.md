@@ -68,6 +68,8 @@ Click **Save Changes** to apply the configuration.
 
 - Clients access DNS management from their **Domain Details** page.
 - A **“DNS Manager”** link appears in the domain sidebar.
+- Active products with a valid hostname show a **“Manage DNS”** button on the product details page.
+- Product hostnames are reduced to their registrable domain (for example, `staff.company.co.nz` uses `company.co.nz`).
 - DNS zones are **not created automatically**.
 - Clients must explicitly click **“Enable DNS”** to create a DNS zone.
 - Once enabled, DNS records can be **added, edited, or deleted**.

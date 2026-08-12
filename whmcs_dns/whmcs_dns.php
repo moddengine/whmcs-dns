@@ -40,7 +40,7 @@ function whmcs_dns_config(): array
         'description' => 'DNS management addon enabling zone and record control via external providers',
         'author'      => 'Namingo',
         'language'    => 'english',
-        'version'     => '1.0.2',
+        'version'     => '2.0.0',
         'fields'      => [
             'provider' => [
                 'FriendlyName' => 'Provider',
@@ -566,17 +566,11 @@ function whmcs_dns_clientarea(array $vars): array
         })
         ->toArray();
 
-    $selectedDomain = trim((string)($_REQUEST['domain'] ?? ''));
+    $selectedDomain = whmcs_dns_normalize_hostname((string)($_REQUEST['domain'] ?? ''));
     $message = null;
 
-    $isActiveDomain = function (string $domainName) use ($clientId): bool {
-        $status = Capsule::table('tbldomains')
-            ->where('userid', $clientId)
-            ->where('domain', $domainName)
-            ->value('status');
-
-        return is_string($status) && whmcs_dns_domain_status_allowed($status);
-    };
+    $isActiveDomain = fn (string $domainName): bool =>
+        whmcs_dns_client_can_manage_domain_name($clientId, $domainName);
 
     $domainAvailable = $selectedDomain !== '' && $isActiveDomain($selectedDomain);
     if ($selectedDomain !== '' && !$domainAvailable) {
@@ -600,7 +594,7 @@ function whmcs_dns_clientarea(array $vars): array
         check_token(); // WHMCS client token
 
         $action = (string)$_POST['action'];
-        $domainName = trim((string)($_POST['domain_name'] ?? ''));
+        $domainName = whmcs_dns_normalize_hostname((string)($_POST['domain_name'] ?? ''));
         if ($domainName === '') {
             $message = ['type' => 'error', 'text' => 'Domain is required.'];
         } else {
