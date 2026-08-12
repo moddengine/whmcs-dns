@@ -4,6 +4,7 @@ parameters:
         - hooks.php
         - permissions.php
         - refresh.php
+        - connect-website.php
         - whmcs_dns.php
     scanFiles:
         - stubs/whmcs.php

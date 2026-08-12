@@ -60,7 +60,10 @@ namespace Illuminate\Database\Schema {
 
 namespace {
     function add_hook(string $name, int $priority, callable $handler): void {}
-    function check_token(): void {}
+    function check_token(?string $namespace = null): void {}
+    function generate_token(string $type = 'plain'): string {}
+    function redir(string $vars, string $filename = 'index.php'): never {}
+    function logActivity(string $description): void {}
     function logModuleCall(string $module, string $action, mixed $request, mixed $response, mixed $processedData = null): void {}
     /** @return array<string, mixed> */
     function localAPI(string $command, array $values, ?string $adminUsername = null): array {}

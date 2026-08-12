@@ -75,6 +75,10 @@ Click **Save Changes** to apply the configuration.
 - Once enabled, DNS records can be **added, edited, or deleted**.
 - Clicking **“Disable DNS”** removes (deletes) the DNS zone from the provider.
 
+### Bunny DNS reconciliation
+
+When Bunny is the configured provider, open **Addons → DNS Hosting** in the WHMCS admin area to compare WHMCS domains and services with Bunny and the addon's local zone mapping. The page offers per-zone Enable, Repair, and strongly confirmed Disable actions; bulk changes are intentionally unavailable.
+
 ## WHMCS Module Update instructions
 
 To update the DNS hosting module to the latest version, download the newest release and replace the existing module files.

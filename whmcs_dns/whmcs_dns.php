@@ -40,7 +40,7 @@ function whmcs_dns_config(): array
         'description' => 'DNS management addon enabling zone and record control via external providers',
         'author'      => 'Namingo',
         'language'    => 'english',
-        'version'     => '2.0.0',
+        'version'     => '2.1.0',
         'fields'      => [
             'provider' => [
                 'FriendlyName' => 'Provider',
@@ -74,6 +74,14 @@ function whmcs_dns_config(): array
                 'Size'         => '64',
                 'Default'      => '',
                 'Description'  => 'SHA-256 hash of the bearer token allowed to call refresh.php. Leave blank to disable the API.',
+            ],
+
+            'connect_website_api_token_hash' => [
+                'FriendlyName' => 'Connect Website API Token SHA-256',
+                'Type'         => 'text',
+                'Size'         => '64',
+                'Default'      => '',
+                'Description'  => 'SHA-256 hash of the bearer token allowed only to call connect-website.php. Leave blank to disable the API.',
             ],
 
             'apply_custom_nameservers' => [
@@ -385,9 +393,244 @@ function whmcs_dns_refresh_bunny_zone(string $domainName, string $apiKey): int
     return count($rows);
 }
 
+function whmcs_dns_public_ipv4(string $address): bool
+{
+    if (filter_var(
+        $address,
+        FILTER_VALIDATE_IP,
+        FILTER_FLAG_IPV4 | FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE
+    ) === false) {
+        return false;
+    }
+
+    $ip = (int) sprintf('%u', ip2long($address));
+    foreach ([
+        ['100.64.0.0', 10], ['192.0.0.0', 24], ['192.0.2.0', 24], ['192.88.99.0', 24],
+        ['198.18.0.0', 15], ['198.51.100.0', 24], ['203.0.113.0', 24],
+    ] as [$network, $prefix]) {
+        $mask = (0xffffffff << (32 - $prefix)) & 0xffffffff;
+        if (($ip & $mask) === (((int) sprintf('%u', ip2long($network))) & $mask)) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+/** @return array{domain: string, ipv4: string} */
+function whmcs_dns_website_request(string $rawBody): array
+{
+    if (strlen($rawBody) > 8192) {
+        throw new InvalidArgumentException('Invalid request body.');
+    }
+    $body = json_decode($rawBody, true, 16, JSON_THROW_ON_ERROR);
+    if (!is_array($body) || !is_string($body['domain'] ?? null) || !is_string($body['ipv4'] ?? null)) {
+        throw new InvalidArgumentException('JSON fields "domain" and "ipv4" are required.');
+    }
+
+    $domain = whmcs_dns_normalize_hostname($body['domain']);
+    if ($domain === '' || filter_var($domain, FILTER_VALIDATE_DOMAIN, FILTER_FLAG_HOSTNAME) === false) {
+        throw new InvalidArgumentException('A valid domain is required.');
+    }
+    $ipv4 = trim($body['ipv4']);
+    if (!whmcs_dns_public_ipv4($ipv4)) {
+        throw new InvalidArgumentException('A valid public IPv4 address is required.');
+    }
+
+    return ['domain' => $domain, 'ipv4' => $ipv4];
+}
+
+/**
+ * @param array<int, array<string, int|string|null>> $records
+ * @return array{delete: array<int, array<string, int|string|null>>, create_apex: bool, create_www: bool}
+ */
+function whmcs_dns_website_record_plan(array $records, string $domainName, string $ipv4): array
+{
+    $domainName = whmcs_dns_normalize_hostname($domainName);
+    $delete = [];
+    $apexKept = false;
+    $wwwKept = false;
+
+    foreach ($records as $record) {
+        $host = strtolower(rtrim(trim((string) ($record['host'] ?? '')), '.'));
+        $type = strtoupper((string) ($record['type'] ?? ''));
+        $value = strtolower(rtrim(trim((string) ($record['value'] ?? '')), '.'));
+        $isApex = in_array($host, ['', '@', $domainName], true);
+        $isWww = in_array($host, ['www', 'www.' . $domainName], true);
+
+        if ($isApex && in_array($type, ['A', 'CNAME', 'RDR'], true)) {
+            if ($type === 'A' && $value === $ipv4 && !$apexKept) {
+                $apexKept = true;
+            } else {
+                $delete[] = $record;
+            }
+            continue;
+        }
+
+        if (!$isWww) {
+            continue;
+        }
+        if (!in_array($type, ['A', 'AAAA', 'CNAME', 'RDR'], true)) {
+            throw new UnexpectedValueException("The unmanaged {$type} record at www prevents a CNAME.", 409);
+        }
+        if ($type === 'CNAME' && $value === $domainName && !$wwwKept) {
+            $wwwKept = true;
+        } else {
+            $delete[] = $record;
+        }
+    }
+
+    return ['delete' => $delete, 'create_apex' => !$apexKept, 'create_www' => !$wwwKept];
+}
+
+/** @param array<int, array<string, int|string|null>> $records */
+function whmcs_dns_website_replacement_note(string $domainName, array $records): string
+{
+    $lines = ["Website DNS reconciliation for {$domainName} at " . gmdate('c'), 'Deleted/replaced records:'];
+    foreach ($records as $record) {
+        $host = (string) ($record['host'] ?? '');
+        $lines[] = sprintf(
+            '%s %s %s (Bunny ID %s)',
+            strtoupper((string) ($record['type'] ?? '')),
+            $host === '' ? '@' : $host,
+            (string) ($record['value'] ?? ''),
+            (string) ($record['recordId'] ?? '')
+        );
+    }
+    $note = implode("\n", $lines);
+    if (strlen($note) > 60000) {
+        throw new RuntimeException('The replacement list is too large for a WHMCS client note.');
+    }
+    return $note;
+}
+
+/** @param array<int, array<string, int|string|null>> $records */
+function whmcs_dns_reconcile_bunny_website(
+    BunnyProvider $provider,
+    int $clientId,
+    string $domainName,
+    string $ipv4,
+    array $records
+): void {
+    $plan = whmcs_dns_website_record_plan($records, $domainName, $ipv4);
+
+    if ($plan['delete'] !== []) {
+        $result = localAPI('AddClientNote', [
+            'userid' => $clientId,
+            'notes' => whmcs_dns_website_replacement_note($domainName, $plan['delete']),
+            'sticky' => false,
+        ]);
+        if (($result['result'] ?? null) !== 'success') {
+            throw new RuntimeException('Could not save replaced DNS records to the client notes.');
+        }
+    }
+
+    foreach ($plan['delete'] as $record) {
+        $provider->deleteRRset(
+            $domainName,
+            (string) ($record['host'] ?? ''),
+            (string) ($record['type'] ?? ''),
+            (string) ($record['value'] ?? ''),
+            $record['recordId'] ?? null
+        );
+    }
+    if ($plan['create_apex']) {
+        $provider->createRRset($domainName, ['subname' => '', 'type' => 'A', 'ttl' => 300, 'records' => [$ipv4]]);
+    }
+    if ($plan['create_www']) {
+        $provider->createRRset($domainName, ['subname' => 'www', 'type' => 'CNAME', 'ttl' => 300, 'records' => [$domainName]]);
+    }
+}
+
 function whmcs_dns_domain_status_allowed(string $status): bool
 {
     return $status === 'Active';
+}
+
+/**
+ * @param array<int, array{id: int|string, domain: string}> $bunnyZones
+ * @param array<int, array{id: int, client_id: int, domain: string, zone_id: string}> $localZones
+ * @param array<int, array{client_id: int, domain: string, id: int, kind: string, name: string, status: string}> $sources
+ * @return array<int, array<string, mixed>>
+ */
+function whmcs_dns_reconciliation_rows(array $bunnyZones, array $localZones, array $sources): array
+{
+    $rows = [];
+    $row = static fn (string $domain): array => [
+        'domain' => $domain,
+        'bunny' => null,
+        'local' => null,
+        'sources' => [],
+        'active_sources' => [],
+        'eligible_client_ids' => [],
+        'status' => '',
+    ];
+
+    foreach ($bunnyZones as $zone) {
+        $domain = whmcs_dns_normalize_hostname($zone['domain']);
+        if ($domain === '') {
+            continue;
+        }
+        $rows[$domain] ??= $row($domain);
+        $rows[$domain]['bunny'] = ['id' => (string) $zone['id']];
+    }
+
+    foreach ($localZones as $zone) {
+        $domain = whmcs_dns_normalize_hostname($zone['domain']);
+        if ($domain === '') {
+            continue;
+        }
+        $rows[$domain] ??= $row($domain);
+        $rows[$domain]['local'] = $zone;
+    }
+
+    foreach ($sources as $source) {
+        $domain = whmcs_dns_normalize_hostname($source['domain']);
+        if ($domain === '') {
+            continue;
+        }
+        $rows[$domain] ??= $row($domain);
+        $rows[$domain]['sources'][] = $source;
+        if (whmcs_dns_domain_status_allowed($source['status'])) {
+            $rows[$domain]['active_sources'][] = $source;
+            $rows[$domain]['eligible_client_ids'][(int) $source['client_id']] = (int) $source['client_id'];
+        }
+    }
+
+    foreach ($rows as $domain => &$item) {
+        usort($item['sources'], static function (array $left, array $right): int {
+            $active = (int) whmcs_dns_domain_status_allowed($right['status'])
+                <=> (int) whmcs_dns_domain_status_allowed($left['status']);
+            return $active ?: [$left['name'], $left['id']] <=> [$right['name'], $right['id']];
+        });
+        $item['eligible_client_ids'] = array_values($item['eligible_client_ids']);
+        $hasActive = $item['active_sources'] !== [];
+        $hasBunny = $item['bunny'] !== null;
+        $hasLocal = $item['local'] !== null;
+
+        if (count($item['eligible_client_ids']) > 1) {
+            $item['status'] = 'conflict';
+        } elseif ($hasActive && !$hasBunny) {
+            $item['status'] = 'missing';
+        } elseif ($hasActive) {
+            $clientId = $item['eligible_client_ids'][0];
+            $item['status'] = !$hasLocal
+                || (int) $item['local']['client_id'] !== $clientId
+                || (string) $item['local']['zone_id'] !== (string) $item['bunny']['id']
+                ? 'repair'
+                : 'in_sync';
+        } elseif ($hasBunny) {
+            $item['status'] = $item['sources'] === [] ? 'orphan' : 'inactive';
+        } elseif ($hasLocal) {
+            $item['status'] = 'stale_local';
+        } else {
+            unset($rows[$domain]);
+        }
+    }
+    unset($item);
+
+    ksort($rows, SORT_NATURAL | SORT_FLAG_CASE);
+    return array_values($rows);
 }
 
 function whmcs_dns_rate_limit_reached(int $attempts): bool
@@ -507,6 +750,337 @@ function whmcs_dns_upgrade(array $vars): void
 {
     whmcs_dns_create_rate_limit_table();
     whmcs_dns_add_srv_columns();
+}
+
+/** @return array<int, array<string, mixed>> */
+function whmcs_dns_admin_reconciliation(string $apiKey): array
+{
+    $provider = new BunnyProvider(['apikey' => $apiKey]);
+    $bunnyZones = [];
+    foreach ($provider->listDomains() as $zone) {
+        if (!is_array($zone) || !is_numeric($zone['id'] ?? null) || !is_string($zone['domain'] ?? null)) {
+            throw new RuntimeException('Bunny returned an invalid DNS zone.');
+        }
+        $bunnyZones[] = ['id' => (string) $zone['id'], 'domain' => $zone['domain']];
+    }
+
+    $localZones = Capsule::table(WHMCSDNS_TABLE_ZONES)
+        ->select('id', 'client_id', 'domain_name', 'zoneId')
+        ->get()
+        ->map(static fn ($zone): array => [
+            'id' => (int) $zone->id,
+            'client_id' => (int) $zone->client_id,
+            'domain' => (string) $zone->domain_name,
+            'zone_id' => (string) ($zone->zoneId ?? ''),
+        ])
+        ->toArray();
+
+    $sources = Capsule::table('tbldomains')
+        ->select('id', 'userid', 'domain', 'status')
+        ->where('domain', '<>', '')
+        ->get()
+        ->map(static fn ($domain): array => [
+            'client_id' => (int) $domain->userid,
+            'domain' => whmcs_dns_normalize_hostname((string) $domain->domain),
+            'id' => (int) $domain->id,
+            'kind' => 'domain',
+            'name' => whmcs_dns_normalize_hostname((string) $domain->domain),
+            'status' => (string) $domain->status,
+        ])
+        ->toArray();
+
+    // ponytail: scan service hostnames here; add a stored apex only if this admin page becomes measurably slow.
+    foreach (Capsule::table('tblhosting')
+        ->select('id', 'userid', 'domain', 'domainstatus')
+        ->where('domain', '<>', '')
+        ->get() as $service) {
+        $apex = whmcs_dns_registrable_domain((string) $service->domain);
+        if ($apex === null) {
+            continue;
+        }
+        $sources[] = [
+            'client_id' => (int) $service->userid,
+            'domain' => $apex,
+            'id' => (int) $service->id,
+            'kind' => 'service',
+            'name' => whmcs_dns_normalize_hostname((string) $service->domain),
+            'status' => (string) $service->domainstatus,
+        ];
+    }
+
+    return whmcs_dns_reconciliation_rows($bunnyZones, $localZones, $sources);
+}
+
+/**
+ * @param array<int, array<string, mixed>> $rows
+ * @return array<string, mixed>
+ */
+function whmcs_dns_admin_find_row(array $rows, string $domainName): array
+{
+    foreach ($rows as $row) {
+        if ($row['domain'] === $domainName) {
+            return $row;
+        }
+    }
+    throw new InvalidArgumentException('The selected reconciliation row no longer exists.');
+}
+
+/** @param array<string, mixed> $row */
+function whmcs_dns_admin_repair(array $row, int $clientId, string $apiKey): int
+{
+    if ($row['bunny'] === null || $row['active_sources'] === [] || $row['status'] === 'conflict'
+        || !in_array($clientId, $row['eligible_client_ids'], true)) {
+        throw new InvalidArgumentException('This customer is not eligible to own the zone.');
+    }
+
+    $domainName = (string) $row['domain'];
+    $now = date('Y-m-d H:i:s');
+    $values = [
+        'client_id' => $clientId,
+        'zoneId' => (string) $row['bunny']['id'],
+        'config' => json_encode(['provider' => 'Bunny'], JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR),
+        'updated_at' => $now,
+    ];
+    $zone = Capsule::table(WHMCSDNS_TABLE_ZONES)->where('domain_name', $domainName)->first();
+    if ($zone) {
+        Capsule::table(WHMCSDNS_TABLE_ZONES)->where('id', $zone->id)->update($values);
+    } else {
+        Capsule::table(WHMCSDNS_TABLE_ZONES)->insert($values + [
+            'domain_name' => $domainName,
+            'created_at' => $now,
+        ]);
+    }
+
+    return whmcs_dns_refresh_bunny_zone($domainName, $apiKey);
+}
+
+/** @param array<string, mixed> $row */
+function whmcs_dns_admin_enable(array $row, string $apiKey): int
+{
+    if ($row['status'] !== 'missing' || count($row['eligible_client_ids']) !== 1) {
+        throw new InvalidArgumentException('This zone is not eligible to be enabled.');
+    }
+
+    $domainName = (string) $row['domain'];
+    $clientId = (int) $row['eligible_client_ids'][0];
+    $plex = new PlexService(Capsule::connection()->getPdo());
+    $plex->createDomain([
+        'client_id' => $clientId,
+        'config' => json_encode([
+            'domain_name' => $domainName,
+            'provider' => 'Bunny',
+            'apikey' => $apiKey,
+        ], JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR),
+    ]);
+
+    return whmcs_dns_refresh_bunny_zone($domainName, $apiKey);
+}
+
+/** @param array<string, mixed> $row */
+function whmcs_dns_admin_disable(array $row, string $apiKey): void
+{
+    $domainName = (string) $row['domain'];
+    if ($row['bunny'] === null && $row['local'] === null) {
+        throw new InvalidArgumentException('There is no zone state to remove.');
+    }
+
+    if ($row['bunny'] !== null) {
+        $noteClientId = (int) ($row['local']['client_id'] ?? $row['sources'][0]['client_id'] ?? 0);
+        if ($noteClientId > 0) {
+            whmcs_dns_save_bunny_zone_note(
+                $noteClientId,
+                $domainName,
+                $apiKey,
+                (string) $row['bunny']['id']
+            );
+        }
+        (new BunnyProvider([
+            'apikey' => $apiKey,
+            'domain_name' => $domainName,
+            'zone_id' => (string) $row['bunny']['id'],
+        ]))->deleteDomain($domainName);
+    }
+
+    if ($row['local'] !== null) {
+        Capsule::connection()->transaction(function () use ($row): void {
+            Capsule::table(WHMCSDNS_TABLE_RECORDS)->where('domain_id', $row['local']['id'])->delete();
+            Capsule::table(WHMCSDNS_TABLE_ZONES)->where('id', $row['local']['id'])->delete();
+        });
+    }
+}
+
+/** @param array<string, mixed> $vars */
+function whmcs_dns_output(array $vars): void
+{
+    $moduleLink = (string) ($vars['modulelink'] ?? 'addonmodules.php?module=whmcs_dns');
+    $providerName = (string) ($vars['provider'] ?? '');
+    $apiKey = (string) ($vars['apikey'] ?? '');
+    $notice = isset($_GET['dns_notice']) ? ['type' => 'success', 'text' => (string) $_GET['dns_notice']] : null;
+    if (isset($_GET['dns_error'])) {
+        $notice = ['type' => 'danger', 'text' => (string) $_GET['dns_error']];
+    }
+
+    if ($providerName !== 'Bunny' || $apiKey === '') {
+        echo '<div class="alert alert-danger">Bunny DNS must be configured before reconciliation is available.</div>';
+        return;
+    }
+
+    try {
+        $rows = whmcs_dns_admin_reconciliation($apiKey);
+        if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST') {
+            check_token('WHMCS.admin.default');
+            $action = (string) ($_POST['action'] ?? '');
+            $domainName = whmcs_dns_normalize_hostname((string) ($_POST['domain_name'] ?? ''));
+            $row = whmcs_dns_admin_find_row($rows, $domainName);
+
+            if ($action === 'enable') {
+                $records = whmcs_dns_admin_enable($row, $apiKey);
+                $message = "Enabled {$domainName}; synced {$records} records.";
+            } elseif ($action === 'repair') {
+                $clientId = filter_var($_POST['client_id'] ?? null, FILTER_VALIDATE_INT, [
+                    'options' => ['min_range' => 1],
+                ]);
+                if ($clientId === false) {
+                    throw new InvalidArgumentException('A valid eligible customer is required.');
+                }
+                $records = whmcs_dns_admin_repair($row, $clientId, $apiKey);
+                $message = "Repaired {$domainName}; synced {$records} records.";
+            } elseif ($action === 'disable') {
+                whmcs_dns_admin_disable($row, $apiKey);
+                $message = "Disabled {$domainName}.";
+            } else {
+                throw new InvalidArgumentException('Invalid reconciliation action.');
+            }
+
+            logActivity('WHMCS DNS admin: ' . $message);
+            redir('module=whmcs_dns&dns_notice=' . urlencode($message), 'addonmodules.php');
+        }
+    } catch (Throwable $e) {
+        logModuleCall('whmcs_dns', 'admin_reconciliation', [], null, $e->getMessage());
+        if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST') {
+            redir('module=whmcs_dns&dns_error=' . urlencode($e->getMessage()), 'addonmodules.php');
+        }
+        $rows = [];
+        $notice = ['type' => 'danger', 'text' => $e->getMessage()];
+    }
+
+    $escape = static fn (mixed $value): string => htmlspecialchars((string) $value, ENT_QUOTES, 'UTF-8');
+    $token = generate_token('plain');
+    $statusLabels = [
+        'in_sync' => ['In sync', 'success'],
+        'missing' => ['Missing in Bunny', 'warning'],
+        'repair' => ['Needs repair', 'warning'],
+        'inactive' => ['Inactive WHMCS item', 'danger'],
+        'orphan' => ['Orphan', 'danger'],
+        'stale_local' => ['Stale local state', 'danger'],
+        'conflict' => ['Ownership conflict', 'danger'],
+    ];
+    $counts = array_count_values(array_column($rows, 'status'));
+    $clientIds = [];
+    foreach ($rows as $row) {
+        if ($row['local'] !== null) {
+            $clientIds[] = (int) $row['local']['client_id'];
+        }
+        $clientIds = array_merge($clientIds, $row['eligible_client_ids']);
+    }
+    $clients = [];
+    if ($clientIds !== []) {
+        foreach (Capsule::table('tblclients')
+            ->select('id', 'firstname', 'lastname', 'companyname')
+            ->whereIn('id', array_values(array_unique($clientIds)))
+            ->get() as $client) {
+            $name = trim((string) $client->companyname);
+            $clients[(int) $client->id] = $name !== ''
+                ? $name
+                : trim((string) $client->firstname . ' ' . (string) $client->lastname);
+        }
+    }
+
+    echo '<h2>Bunny DNS Reconciliation</h2>';
+    echo '<p>Compares WHMCS domains and services with Bunny zones and the addon local mapping. Actions apply to one zone only.</p>';
+    if ($notice !== null) {
+        echo '<div class="alert alert-' . $escape($notice['type']) . '">' . $escape($notice['text']) . '</div>';
+    }
+    echo '<p>';
+    foreach ($statusLabels as $status => [$label, $class]) {
+        echo '<span class="label label-' . $class . '" style="margin-right:8px">'
+            . $escape($label) . ': ' . (int) ($counts[$status] ?? 0) . '</span>';
+    }
+    echo '</p><div class="table-responsive"><table class="table table-striped table-bordered">'
+        . '<thead><tr><th>Domain</th><th>WHMCS item</th><th>Customer / local mapping</th>'
+        . '<th>Bunny</th><th>Status</th><th style="min-width:250px">Actions</th></tr></thead><tbody>';
+
+    foreach ($rows as $row) {
+        [$statusLabel, $statusClass] = $statusLabels[$row['status']];
+        $source = $row['sources'][0] ?? null;
+        echo '<tr><td><strong>' . $escape($row['domain']) . '</strong></td><td>';
+        if ($source === null) {
+            echo '<span class="text-muted">No matching WHMCS item</span>';
+        } else {
+            $sourceUrl = $source['kind'] === 'domain'
+                ? 'clientsdomains.php?id=' . (int) $source['id']
+                : 'clientsservices.php?id=' . (int) $source['id'];
+            if (whmcs_dns_domain_status_allowed($source['status'])) {
+                echo '<span class="text-success" aria-label="Active">&#10003;</span> ';
+            }
+            echo '<a href="' . $escape($sourceUrl) . '">' . $escape($source['name']) . '</a>'
+                . '<br><small>' . $escape(ucfirst($source['kind']) . ': ' . $source['status']) . '</small>';
+        }
+        echo '</td><td>';
+        if ($row['local'] === null) {
+            echo '<span class="text-muted">No local mapping</span>';
+        } else {
+            $ownerId = (int) $row['local']['client_id'];
+            echo '<a href="clientssummary.php?userid=' . $ownerId . '">'
+                . $escape($clients[$ownerId] ?? "Customer #{$ownerId}") . '</a>'
+                . '<br><small>Local zone #' . (int) $row['local']['id']
+                . ', Bunny ID ' . $escape($row['local']['zone_id'] ?: 'missing') . '</small>';
+        }
+        echo '</td><td>' . ($row['bunny'] === null
+            ? '<span class="text-muted">Missing</span>'
+            : 'Zone #' . $escape($row['bunny']['id'])) . '</td>'
+            . '<td><span class="label label-' . $statusClass . '">' . $escape($statusLabel) . '</span></td><td>';
+
+        if ($row['status'] === 'missing') {
+            echo '<form method="post" action="' . $escape($moduleLink) . '" style="display:inline-block;margin-right:6px">'
+                . '<input type="hidden" name="token" value="' . $escape($token) . '">'
+                . '<input type="hidden" name="action" value="enable">'
+                . '<input type="hidden" name="domain_name" value="' . $escape($row['domain']) . '">'
+                . '<button class="btn btn-primary btn-xs" type="submit">Enable</button></form>';
+        }
+        if ($row['status'] === 'repair') {
+            echo '<form method="post" action="' . $escape($moduleLink) . '" style="display:inline-block;margin-right:6px">'
+                . '<input type="hidden" name="token" value="' . $escape($token) . '">'
+                . '<input type="hidden" name="action" value="repair">'
+                . '<input type="hidden" name="domain_name" value="' . $escape($row['domain']) . '">'
+                . '<select name="client_id" class="form-control input-sm" style="width:auto;display:inline-block" aria-label="Eligible customer">';
+            foreach ($row['eligible_client_ids'] as $clientId) {
+                echo '<option value="' . (int) $clientId . '">'
+                    . $escape($clients[$clientId] ?? "Customer #{$clientId}") . '</option>';
+            }
+            echo '</select> <button class="btn btn-warning btn-xs" type="submit">Repair owner/cache</button></form>';
+        }
+        if ($row['status'] !== 'conflict' && ($row['bunny'] !== null || $row['local'] !== null)) {
+            $warning = $row['bunny'] !== null
+                ? 'WARNING: Permanently delete the Bunny DNS zone and all records for ' . $row['domain'] . '? This cannot be undone.'
+                : 'Remove stale local DNS state for ' . $row['domain'] . '?';
+            echo '<form method="post" action="' . $escape($moduleLink) . '" style="display:inline-block" onsubmit="return confirm(&quot;'
+                . $escape($warning) . '&quot;)">'
+                . '<input type="hidden" name="token" value="' . $escape($token) . '">'
+                . '<input type="hidden" name="action" value="disable">'
+                . '<input type="hidden" name="domain_name" value="' . $escape($row['domain']) . '">'
+                . '<button class="btn btn-danger btn-xs" type="submit">'
+                . ($row['bunny'] !== null ? 'Disable / delete' : 'Clear local state') . '</button></form>';
+        }
+        if ($row['status'] === 'conflict') {
+            echo '<span class="text-danger">No automatic action: multiple active customers claim this apex.</span>';
+        }
+        echo '</td></tr>';
+    }
+    if ($rows === []) {
+        echo '<tr><td colspan="6">No DNS reconciliation rows found.</td></tr>';
+    }
+    echo '</tbody></table></div>';
 }
 
 /**
