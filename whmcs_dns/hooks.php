@@ -20,7 +20,8 @@ if (file_exists($autoload)) {
 }
 require_once __DIR__ . '/permissions.php';
 
-add_hook('ClientAreaProductDetailsOutput', 1, function ($service) {
+add_hook('ClientAreaProductDetailsOutput', 1, function ($vars) {
+    $service = $vars['service'] ?? null;
     if (empty($_SESSION['uid']) || !is_object($service)) {
         return '';
     }
