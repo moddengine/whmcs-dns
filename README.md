@@ -6,11 +6,22 @@
 
 DNS hosting module for WHMCS
 
+## Enhancements in this fork
+
+This fork extends the [original Namingo module](https://github.com/getnamingo/whmcs-dns) with:
+
+- **Safer client access:** active-domain/service ownership checks, WHMCS subaccount permissions, CSRF protection, mutation rate limiting, stale-record detection, and provider-record ownership validation.
+- **Hosting product support:** active products with a hostname can manage the registrable domain from their product details page.
+- **Improved Bunny support:** provider record IDs, SRV fields, RDR and NS records, manual record sync, optional custom nameservers, and zone export to client notes before deletion.
+- **Bunny admin reconciliation:** an alphabetical view of WHMCS items, Bunny zones, and local mappings with per-zone Enable, Repair/owner reassignment, and strongly confirmed Disable actions. Cross-customer conflicts are reported without automatic actions; bulk mutations are deliberately unavailable.
+- **Automation APIs:** authenticated endpoints for refreshing a Bunny zone and connecting a website to an apex A record plus `www` CNAME while preserving unrelated records.
+- **Release safety:** PHPStan and runnable security checks, an optional live Bunny integration check, and reproducible release archives built for version tags.
+
 ## Supported Providers
 
-Most DNS providers **require an API key**, while some may need **additional settings** such as authentication credentials or specific server configurations. All required values must be set in the `.env` file.
+Most DNS providers **require an API key**, while some need additional authentication or server settings. Configure these values in the WHMCS addon settings.
 
-| Provider    | Credentials in .env | Requirements  | Status | DNSSEC |
+| Provider    | Credentials | Requirements  | Status | DNSSEC |
 |------------|---------------------|------------|---------------------|---------------------|
 | **AnycastDNS** | `API_KEY` | | ✅ | ❌ |
 | **Bind9** | `API_KEY:BIND_IP` | [bind9-api-server](https://github.com/getnamingo/bind9-api-server)/[bind9-api-server-sqlite](https://github.com/getnamingo/bind9-api-server-sqlite) | ✅ | 🚧 |
@@ -56,6 +67,9 @@ After activating the addon, configure the module settings in **WHMCS → System 
 - **API Key**  
   API key for the selected DNS provider.
 
+- **Apply Custom Nameservers**
+  When using Bunny, apply NS1 and NS2 to newly created zones.
+
 - **SOA Email**  
   Email address used in the SOA record (where applicable).
 
@@ -79,6 +93,34 @@ Click **Save Changes** to apply the configuration.
 
 When Bunny is the configured provider, open **Addons → DNS Hosting** in the WHMCS admin area to compare WHMCS domains and services with Bunny and the addon's local zone mapping. The page offers per-zone Enable, Repair, and strongly confirmed Disable actions; bulk changes are intentionally unavailable.
 
+Rows distinguish zones that are in sync, missing from Bunny, in need of local repair, attached only to inactive WHMCS items, orphaned in Bunny, stale locally, or claimed by multiple customers. Repair changes only the local customer/zone mapping and refreshes the record cache; it does not alter Bunny records.
+
+### Bunny automation APIs
+
+Generate or rotate the separate endpoint keys under **Addons → DNS Hosting → Automation API Keys**. Copy each generated key when it is shown; only its bcrypt hash is saved in the addon settings. Send the key as a bearer token.
+
+Refresh the local record cache from Bunny:
+
+```http
+POST /modules/addons/whmcs_dns/refresh.php
+Authorization: Bearer <refresh-key>
+Content-Type: application/json
+
+{"domain":"example.com"}
+```
+
+Connect a website to an exact active WHMCS domain:
+
+```http
+POST /modules/addons/whmcs_dns/connect-website.php
+Authorization: Bearer <connect-website-key>
+Content-Type: application/json
+
+{"domain":"example.com","ipv4":"203.0.114.10"}
+```
+
+The connect endpoint creates or reuses the Bunny zone, sets the apex A record and `www` CNAME, preserves unrelated records, and records replaced website entries in the client's notes. It accepts public IPv4 addresses only.
+
 ## WHMCS Module Update instructions
 
 To update the DNS hosting module to the latest version, download the newest release and replace the existing module files.
@@ -96,10 +138,9 @@ From your server:
 
 ```bash
 cd /tmp
-wget https://github.com/getnamingo/whmcs-dns/releases/download/v1.0.1/whmcs-dns-v1.0.1.tar.gz
-tar xzf whmcs-dns-v1.0.1.tar.gz
-cd whmcs-dns-v1.0.1
-mv whmcs_dns /path/to/whmcs/modules/addons/whmcs_dns
+wget https://github.com/moddengine/whmcs-dns/releases/download/v2.2.0/whmcs-dns-2.2.0.zip
+unzip whmcs-dns-2.2.0.zip
+cp -a whmcs_dns /path/to/whmcs/modules/addons/
 ```
 
 ## Support
@@ -110,7 +151,7 @@ Your feedback and inquiries are invaluable to Namingo's evolutionary journey. If
 
 - **Discord**: Or chat with us on our [Discord](https://discord.gg/97R9VCrWgc) channel.
   
-- **GitHub Issues**: For bug reports or feature requests, please use the [Issues](https://github.com/getnamingo/whmcs-dns/issues) section of our GitHub repository.
+- **GitHub Issues**: For bug reports or feature requests specific to this fork, use [moddengine/whmcs-dns issues](https://github.com/moddengine/whmcs-dns/issues).
 
 We appreciate your involvement and patience as Namingo continues to grow and adapt.
 

@@ -13,6 +13,7 @@ if (!defined("WHMCS")) {
 }
 
 use WHMCS\Database\Capsule;
+use WHMCS\Module\Addon\Setting;
 use PlexDNS\Service as PlexService;
 use PlexDNS\Providers\Bunny as BunnyProvider;
 
@@ -40,7 +41,7 @@ function whmcs_dns_config(): array
         'description' => 'DNS management addon enabling zone and record control via external providers',
         'author'      => 'Namingo',
         'language'    => 'english',
-        'version'     => '2.1.1',
+        'version'     => '2.2.0',
         'fields'      => [
             'provider' => [
                 'FriendlyName' => 'Provider',
@@ -66,22 +67,6 @@ function whmcs_dns_config(): array
                 'Size'         => '50',
                 'Default'      => '',
                 'Description'  => "Enter your DNS provider's API key. Keep it confidential and ensure it's valid for requests.",
-            ],
-
-            'refresh_api_token_hash' => [
-                'FriendlyName' => 'Refresh API Token SHA-256',
-                'Type'         => 'text',
-                'Size'         => '64',
-                'Default'      => '',
-                'Description'  => 'SHA-256 hash of the bearer token allowed to call refresh.php. Leave blank to disable the API.',
-            ],
-
-            'connect_website_api_token_hash' => [
-                'FriendlyName' => 'Connect Website API Token SHA-256',
-                'Type'         => 'text',
-                'Size'         => '64',
-                'Default'      => '',
-                'Description'  => 'SHA-256 hash of the bearer token allowed only to call connect-website.php. Leave blank to disable the API.',
             ],
 
             'apply_custom_nameservers' => [
@@ -301,14 +286,14 @@ function whmcs_dns_save_bunny_zone_note(
     }
 }
 
-function whmcs_dns_refresh_token_valid(string $authorization, string $configuredHash): bool
+function whmcs_dns_api_token_valid(string $authorization, string $configuredHash): bool
 {
     if (!preg_match('/^Bearer\s+(\S+)$/i', trim($authorization), $matches)
-        || !preg_match('/^[a-f0-9]{64}$/i', $configuredHash)) {
+        || !preg_match('/^\$2[ayb]\$/', $configuredHash)) {
         return false;
     }
 
-    return hash_equals(strtolower($configuredHash), hash('sha256', $matches[1]));
+    return password_verify($matches[1], $configuredHash);
 }
 
 /**
@@ -920,6 +905,52 @@ function whmcs_dns_output(array $vars): void
         $notice = ['type' => 'danger', 'text' => (string) $_GET['dns_error']];
     }
 
+    $rotationSettings = [
+        'rotate_refresh_api_key' => ['refresh_api_token_hash', 'Refresh API'],
+        'rotate_connect_website_api_key' => ['connect_website_api_token_hash', 'Connect Website API'],
+    ];
+    if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST'
+        && isset($rotationSettings[(string) ($_POST['action'] ?? '')])) {
+        try {
+            check_token('WHMCS.admin.default');
+            [$setting, $label] = $rotationSettings[(string) $_POST['action']];
+            $key = bin2hex(random_bytes(32));
+            $hash = password_hash($key, PASSWORD_BCRYPT);
+            Capsule::table('tbladdonmodules')->updateOrInsert(
+                ['module' => 'whmcs_dns', 'setting' => $setting],
+                ['value' => $hash]
+            );
+            $_SESSION['whmcs_dns_new_api_key'] = ['label' => $label, 'key' => $key];
+            logActivity("WHMCS DNS admin: Rotated {$label} key.");
+            redir('module=whmcs_dns', 'addonmodules.php');
+        } catch (Throwable $e) {
+            logModuleCall('whmcs_dns', 'rotate_api_key', [], null, $e->getMessage());
+            redir('module=whmcs_dns&dns_error=' . urlencode('API key rotation failed.'), 'addonmodules.php');
+        }
+    }
+
+    $escape = static fn (mixed $value): string => htmlspecialchars((string) $value, ENT_QUOTES, 'UTF-8');
+    $token = generate_token('plain');
+    $newApiKey = $_SESSION['whmcs_dns_new_api_key'] ?? null;
+    unset($_SESSION['whmcs_dns_new_api_key']);
+
+    echo '<h2>Automation API Keys</h2>';
+    echo '<p>Keys are shown once. Rotating a key immediately invalidates the previous key for that endpoint.</p>';
+    if (is_array($newApiKey) && isset($newApiKey['label'], $newApiKey['key'])) {
+        echo '<div class="alert alert-warning"><strong>' . $escape($newApiKey['label'])
+            . ' key (copy now):</strong><br><code style="user-select:all">'
+            . $escape($newApiKey['key']) . '</code></div>';
+    }
+    foreach ($rotationSettings as $action => [$setting, $label]) {
+        $configured = (string) (Setting::getSettingValueForModule('whmcs_dns', $setting) ?? '') !== '';
+        echo '<form method="post" action="' . $escape($moduleLink) . '" style="display:inline-block;margin:0 8px 20px 0">'
+            . '<input type="hidden" name="token" value="' . $escape($token) . '">'
+            . '<input type="hidden" name="action" value="' . $escape($action) . '">'
+            . '<button class="btn btn-' . ($configured ? 'warning' : 'primary') . '" type="submit"'
+            . ($configured ? ' onclick="return confirm(&quot;Replace the current ' . $escape($label) . ' key?&quot;)"' : '') . '>'
+            . ($configured ? 'Rotate ' : 'Generate ') . $escape($label) . ' key</button></form>';
+    }
+
     if ($providerName !== 'Bunny' || $apiKey === '') {
         echo '<div class="alert alert-danger">Bunny DNS must be configured before reconciliation is available.</div>';
         return;
@@ -964,8 +995,6 @@ function whmcs_dns_output(array $vars): void
         $notice = ['type' => 'danger', 'text' => $e->getMessage()];
     }
 
-    $escape = static fn (mixed $value): string => htmlspecialchars((string) $value, ENT_QUOTES, 'UTF-8');
-    $token = generate_token('plain');
     $statusLabels = [
         'in_sync' => ['In sync', 'success'],
         'missing' => ['Missing in Bunny', 'warning'],

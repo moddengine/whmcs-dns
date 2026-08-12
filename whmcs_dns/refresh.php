@@ -25,7 +25,7 @@ if (($_SERVER['REQUEST_METHOD'] ?? '') !== 'POST') {
 
 $authorization = (string) ($_SERVER['HTTP_AUTHORIZATION'] ?? $_SERVER['REDIRECT_HTTP_AUTHORIZATION'] ?? '');
 $tokenHash = (string) (Setting::getSettingValueForModule('whmcs_dns', 'refresh_api_token_hash') ?? '');
-if (!whmcs_dns_refresh_token_valid($authorization, $tokenHash)) {
+if (!whmcs_dns_api_token_valid($authorization, $tokenHash)) {
     whmcs_dns_refresh_response(401, ['error' => 'Unauthorized.']);
 }
 
