@@ -15,6 +15,7 @@ This fork extends the [original Namingo module](https://github.com/getnamingo/wh
 - **Improved Bunny support:** provider record IDs, SRV fields, RDR and NS records, manual record sync, optional custom nameservers, and zone export to client notes before deletion.
 - **Bunny admin reconciliation:** an alphabetical view of WHMCS items, Bunny zones, and local mappings with per-zone Enable, Repair/owner reassignment, and strongly confirmed Disable actions. Cross-customer conflicts are reported without automatic actions; bulk mutations are deliberately unavailable.
 - **Automation APIs:** authenticated endpoints for refreshing a Bunny zone and connecting a website to an apex A record plus `www` CNAME while preserving unrelated records.
+- **cPanel bridge:** a durable one-way bridge imports hosting A records and DKIM from cPanel without copying its generated DNS boilerplate.
 - **Release safety:** PHPStan and runnable security checks, an optional live Bunny integration check, and reproducible release archives built for version tags.
 
 ## Supported Providers
@@ -121,6 +122,24 @@ Content-Type: application/json
 
 The connect endpoint creates or reuses the Bunny zone, sets the apex A record and `www` CNAME, preserves unrelated records, and records replaced website entries in the client's notes. It accepts public IPv4 addresses only.
 
+### cPanel DNS bridge
+
+The optional `whmcs-dns-bridge` runs on a WHM/cPanel host and sends selected cPanel DNS updates to this addon. It imports only apex/configured-domain A records and `*._domainkey` TXT records. cPanel-generated service hosts, SPF, DMARC, DCV, MX, CNAME, SRV, NS, SOA, and other records are ignored.
+
+1. In **Addons → DNS Hosting → Automation API Keys**, generate a **cPanel Sync API** key.
+2. Download the bridge archive matching the cPanel host architecture and extract it.
+3. Run `sudo ./install.sh`.
+4. Edit `/usr/local/sbin/whmcs-dns-bridge.json` with the endpoint, key, and the matching WHMCS server ID, then run `sudo systemctl start whmcs-dns-bridge`.
+5. In WHM's DNS Cluster page, add the **WHMCS-DNS** backend with the **Write-only** role. The form credentials are placeholders because communication uses the root-only local socket.
+
+The daemon acknowledges a cPanel operation only after its record updates are durably queued. It delivers one update at a time, retries failures five times, then retains them under `/var/lib/whmcs-dns-bridge/dead`. Inspect logs with `journalctl -u whmcs-dns-bridge`; replay a corrected dead-letter job by resetting its `attempts` field to `0`, then move and rename it in the sibling `ready` directory as `<id>.json` using the `id` stored in the file.
+
+Synchronization is one-way from cPanel to WHMCS-DNS. Changes made in WHMCS-DNS and record deletions are not sent back to cPanel; newer pending values for the same record replace older retries.
+
+`process_synczones` is disabled by default. Enable it in the adjacent JSON configuration only when bulk/initial cPanel zone synchronization should be imported. Zones containing more than 250 total records are rejected before filtering.
+
+If WHMCS-DNS is the customer-facing editor, separately hide cPanel's Zone Editor through WHM Feature Manager. You may also disable the local nameserver daemon, but retain cPanel's DNS role and `dnsadmin` integration. These are deployment choices; the bridge does not modify cPanel settings.
+
 ## WHMCS Module Update instructions
 
 To update the DNS hosting module to the latest version, download the newest release and replace the existing module files.
@@ -138,8 +157,8 @@ From your server:
 
 ```bash
 cd /tmp
-wget https://github.com/moddengine/whmcs-dns/releases/download/v2.2.0/whmcs-dns-2.2.0.zip
-unzip whmcs-dns-2.2.0.zip
+wget https://github.com/moddengine/whmcs-dns/releases/download/v2.3.0/whmcs-dns-2.3.0.zip
+unzip whmcs-dns-2.3.0.zip
 cp -a whmcs_dns /path/to/whmcs/modules/addons/
 ```
 

@@ -41,7 +41,7 @@ function whmcs_dns_config(): array
         'description' => 'DNS management addon enabling zone and record control via external providers',
         'author'      => 'Namingo',
         'language'    => 'english',
-        'version'     => '2.2.0',
+        'version'     => '2.3.0',
         'fields'      => [
             'provider' => [
                 'FriendlyName' => 'Provider',
@@ -423,6 +423,212 @@ function whmcs_dns_website_request(string $rawBody): array
     }
 
     return ['domain' => $domain, 'ipv4' => $ipv4];
+}
+
+/** @return array{server_id: int, cpanel_user: string, domain: string, type: string, value: string} */
+function whmcs_dns_cpanel_request(string $rawBody): array
+{
+    if (strlen($rawBody) > 16384) {
+        throw new InvalidArgumentException('Invalid request body.');
+    }
+
+    $body = json_decode($rawBody, true, 8, JSON_THROW_ON_ERROR);
+    if (!is_array($body)) {
+        throw new InvalidArgumentException('A JSON object is required.');
+    }
+
+    $serverId = filter_var($body['server_id'] ?? null, FILTER_VALIDATE_INT, [
+        'options' => ['min_range' => 1],
+    ]);
+    $user = strtolower(trim(is_string($body['cpanel_user'] ?? null) ? $body['cpanel_user'] : ''));
+    $domain = whmcs_dns_normalize_hostname(is_string($body['domain'] ?? null) ? $body['domain'] : '');
+    $type = strtoupper(trim(is_string($body['type'] ?? null) ? $body['type'] : ''));
+    $value = trim(is_string($body['value'] ?? null) ? $body['value'] : '');
+
+    if ($serverId === false) {
+        throw new InvalidArgumentException('A valid server_id is required.');
+    }
+    if (!preg_match('/^[a-z][a-z0-9_]{0,15}$/', $user)) {
+        throw new InvalidArgumentException('A valid cPanel username is required.');
+    }
+    $validDomain = filter_var($domain, FILTER_VALIDATE_DOMAIN, FILTER_FLAG_HOSTNAME) !== false;
+    if ($type === 'TXT') {
+        $validDomain = preg_match(
+            '/^(?=.{1,253}$)(?:[a-z0-9_](?:[a-z0-9_-]{0,61}[a-z0-9_])?\.)+[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/D',
+            $domain
+        ) === 1;
+    }
+    if (!$validDomain) {
+        throw new InvalidArgumentException('A valid record domain is required.');
+    }
+    if (!in_array($type, ['A', 'TXT'], true)) {
+        throw new InvalidArgumentException('Only A and TXT records are accepted.');
+    }
+    if ($type === 'A' && filter_var($value, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4) === false) {
+        throw new InvalidArgumentException('A valid IPv4 value is required.');
+    }
+    if ($type === 'TXT' && ($value === '' || strlen($value) > 4096)) {
+        throw new InvalidArgumentException('TXT values must contain between 1 and 4096 bytes.');
+    }
+
+    return [
+        'server_id' => (int) $serverId,
+        'cpanel_user' => $user,
+        'domain' => $domain,
+        'type' => $type,
+        'value' => $value,
+    ];
+}
+
+function whmcs_dns_hostname_in_zone(string $hostname, string $zone): bool
+{
+    return $hostname === $zone || str_ends_with($hostname, '.' . $zone);
+}
+
+/** @return array{client_id: int, zone: string} */
+function whmcs_dns_cpanel_record_context(int $serverId, string $user, string $domain): array
+{
+    $services = Capsule::table('tblhosting')
+        ->select('userid', 'domain')
+        ->where('server', $serverId)
+        ->where('username', $user)
+        ->where('domainstatus', 'Active')
+        ->where('domain', '<>', '')
+        ->get();
+
+    $clientIds = [];
+    $apexes = [];
+    foreach ($services as $service) {
+        $apex = whmcs_dns_registrable_domain((string) $service->domain);
+        if ($apex === null || !whmcs_dns_hostname_in_zone($domain, $apex)) {
+            continue;
+        }
+        $clientId = (int) $service->userid;
+        $clientIds[$clientId] = $clientId;
+        $apexes[$apex] = $apex;
+    }
+    if (count($clientIds) !== 1 || $apexes === []) {
+        throw new UnexpectedValueException('The cPanel account does not map to one active WHMCS customer.', 409);
+    }
+
+    $clientId = array_values($clientIds)[0];
+    $zones = Capsule::table(WHMCSDNS_TABLE_ZONES)
+        ->select('domain_name')
+        ->where('client_id', $clientId)
+        ->get()
+        ->map(static fn ($zone): string => whmcs_dns_normalize_hostname((string) $zone->domain_name))
+        ->filter(static fn (string $zone): bool => $zone !== '' && whmcs_dns_hostname_in_zone($domain, $zone))
+        ->values()
+        ->toArray();
+
+    $candidates = $zones !== [] ? $zones : array_values($apexes);
+    usort($candidates, static fn (string $left, string $right): int => strlen($right) <=> strlen($left));
+    return ['client_id' => $clientId, 'zone' => $candidates[0]];
+}
+
+/** @return array<string, mixed> */
+function whmcs_dns_provider_record_config(string $domainName): array
+{
+    $provider = (string) (Setting::getSettingValueForModule('whmcs_dns', 'provider') ?? '');
+    $apiKey = (string) (Setting::getSettingValueForModule('whmcs_dns', 'apikey') ?? '');
+    if ($provider === '' || $apiKey === '') {
+        throw new RuntimeException('DNS provider is not configured.');
+    }
+
+    $config = ['domain_name' => $domainName, 'provider' => $provider, 'apikey' => $apiKey];
+    if ($provider === 'PowerDNS') {
+        $config['powerdnsip'] = Setting::getSettingValueForModule('whmcs_dns', 'bind_powerdns_api_ip');
+    } elseif ($provider === 'Bind') {
+        $config['bindip'] = Setting::getSettingValueForModule('whmcs_dns', 'bind_powerdns_api_ip');
+    }
+    if (in_array($provider, ['PowerDNS', 'Bind'], true)) {
+        for ($i = 1; $i <= 5; $i++) {
+            $value = (string) (Setting::getSettingValueForModule('whmcs_dns', 'ns' . $i) ?? '');
+            if ($value !== '') {
+                $config['ns' . $i] = $value;
+            }
+        }
+    }
+    return $config;
+}
+
+/**
+ * @param array{server_id: int, cpanel_user: string, domain: string, type: string, value: string} $request
+ * @return array{status: string, action: string, zone: string}
+ */
+function whmcs_dns_sync_cpanel_record(array $request): array
+{
+    $context = whmcs_dns_cpanel_record_context(
+        $request['server_id'],
+        $request['cpanel_user'],
+        $request['domain']
+    );
+    $zoneName = $context['zone'];
+    $relativeName = $request['domain'] === $zoneName
+        ? ''
+        : substr($request['domain'], 0, -strlen('.' . $zoneName));
+    if ($request['type'] === 'TXT' && !str_ends_with($relativeName, '._domainkey')) {
+        throw new InvalidArgumentException('Only DKIM TXT records are accepted.');
+    }
+
+    $config = whmcs_dns_provider_record_config($zoneName);
+    $pdo = Capsule::connection()->getPdo();
+    $plex = new PlexService($pdo);
+    $zone = Capsule::table(WHMCSDNS_TABLE_ZONES)
+        ->where('domain_name', $zoneName)
+        ->where('client_id', $context['client_id'])
+        ->first();
+    if (!$zone) {
+        $plex->createDomain([
+            'client_id' => $context['client_id'],
+            'config' => json_encode($config, JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR),
+        ]);
+        $zone = Capsule::table(WHMCSDNS_TABLE_ZONES)
+            ->where('domain_name', $zoneName)
+            ->where('client_id', $context['client_id'])
+            ->first();
+        if (!$zone) {
+            throw new RuntimeException('The provider zone was created without a local zone mapping.');
+        }
+    }
+
+    $records = Capsule::table(WHMCSDNS_TABLE_RECORDS)
+        ->where('domain_id', $zone->id)
+        ->where('type', $request['type'])
+        ->where('host', $relativeName)
+        ->get();
+    if ($records->count() > 1) {
+        throw new UnexpectedValueException('The target RRset contains multiple records.', 409);
+    }
+
+    $value = $request['value'];
+    if ($request['type'] === 'TXT') {
+        $value = '"' . str_replace('"', '\\"', trim($value, '"')) . '"';
+    }
+    $record = $records->first();
+    if ($record && (string) $record->value === $value) {
+        return ['status' => 'ok', 'action' => 'unchanged', 'zone' => $zoneName];
+    }
+
+    $recordConfig = $config + [
+        'record_name' => $relativeName,
+        'record_type' => $request['type'],
+        'record_value' => $value,
+        'record_ttl' => $record && $record->ttl !== null ? (int) $record->ttl : 3600,
+        'record_priority' => null,
+        'record_weight' => null,
+        'record_port' => null,
+    ];
+    if (!$record) {
+        $plex->addRecord($recordConfig);
+        return ['status' => 'ok', 'action' => 'created', 'zone' => $zoneName];
+    }
+
+    $plex->updateRecord($recordConfig + [
+        'record_id' => (int) $record->id,
+        'old_value' => (string) $record->value,
+    ]);
+    return ['status' => 'ok', 'action' => 'updated', 'zone' => $zoneName];
 }
 
 /**
@@ -900,14 +1106,54 @@ function whmcs_dns_output(array $vars): void
     $moduleLink = (string) ($vars['modulelink'] ?? 'addonmodules.php?module=whmcs_dns');
     $providerName = (string) ($vars['provider'] ?? '');
     $apiKey = (string) ($vars['apikey'] ?? '');
+    $escape = static fn (mixed $value): string => htmlspecialchars((string) $value, ENT_QUOTES, 'UTF-8');
     $notice = isset($_GET['dns_notice']) ? ['type' => 'success', 'text' => (string) $_GET['dns_notice']] : null;
     if (isset($_GET['dns_error'])) {
         $notice = ['type' => 'danger', 'text' => (string) $_GET['dns_error']];
     }
 
+    if (($_GET['dns_action'] ?? '') === 'manage') {
+        try {
+            check_token('WHMCS.admin.default');
+            $itemId = filter_var($_GET['item_id'] ?? null, FILTER_VALIDATE_INT, [
+                'options' => ['min_range' => 1],
+            ]);
+            $context = $itemId === false ? null : whmcs_dns_admin_item_context(
+                (string) ($_GET['item_type'] ?? ''),
+                (int) $itemId
+            );
+            if ($context === null) {
+                throw new InvalidArgumentException('This item is not active or does not have a valid domain.');
+            }
+
+            $sso = localAPI('CreateSsoToken', [
+                'client_id' => $context['client_id'],
+                'destination' => 'sso:custom_redirect',
+                'sso_redirect_path' => 'index.php?m=whmcs_dns&domain=' . urlencode($context['domain_name']),
+            ]);
+            $redirectUrl = (string) ($sso['redirect_url'] ?? '');
+            if (($sso['result'] ?? '') !== 'success'
+                || filter_var($redirectUrl, FILTER_VALIDATE_URL) === false) {
+                throw new RuntimeException((string) ($sso['message'] ?? 'WHMCS could not create the client login.'));
+            }
+
+            logActivity('WHMCS DNS admin: Generated client login for '
+                . $context['domain_name'] . ' (customer #' . $context['client_id'] . ').');
+            header('Location: ' . $redirectUrl);
+            exit;
+        } catch (Throwable $e) {
+            logModuleCall('whmcs_dns', 'admin_manage_dns', [
+                'item_type' => (string) ($_GET['item_type'] ?? ''),
+                'item_id' => (string) ($_GET['item_id'] ?? ''),
+            ], null, $e->getMessage());
+            $notice = ['type' => 'danger', 'text' => $e->getMessage()];
+        }
+    }
+
     $rotationSettings = [
         'rotate_refresh_api_key' => ['refresh_api_token_hash', 'Refresh API'],
         'rotate_connect_website_api_key' => ['connect_website_api_token_hash', 'Connect Website API'],
+        'rotate_cpanel_sync_api_key' => ['cpanel_sync_api_token_hash', 'cPanel Sync API'],
     ];
     if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST'
         && isset($rotationSettings[(string) ($_POST['action'] ?? '')])) {
@@ -929,7 +1175,6 @@ function whmcs_dns_output(array $vars): void
         }
     }
 
-    $escape = static fn (mixed $value): string => htmlspecialchars((string) $value, ENT_QUOTES, 'UTF-8');
     $token = generate_token('plain');
     $newApiKey = $_SESSION['whmcs_dns_new_api_key'] ?? null;
     unset($_SESSION['whmcs_dns_new_api_key']);
@@ -949,6 +1194,10 @@ function whmcs_dns_output(array $vars): void
             . '<button class="btn btn-' . ($configured ? 'warning' : 'primary') . '" type="submit"'
             . ($configured ? ' onclick="return confirm(&quot;Replace the current ' . $escape($label) . ' key?&quot;)"' : '') . '>'
             . ($configured ? 'Rotate ' : 'Generate ') . $escape($label) . ' key</button></form>';
+    }
+    if ($notice !== null) {
+        echo '<div class="alert alert-' . $escape($notice['type']) . '">' . $escape($notice['text']) . '</div>';
+        $notice = null;
     }
 
     if ($providerName !== 'Bunny' || $apiKey === '') {
@@ -1027,9 +1276,6 @@ function whmcs_dns_output(array $vars): void
 
     echo '<h2>Bunny DNS Reconciliation</h2>';
     echo '<p>Compares WHMCS domains and services with Bunny zones and the addon local mapping. Actions apply to one zone only.</p>';
-    if ($notice !== null) {
-        echo '<div class="alert alert-' . $escape($notice['type']) . '">' . $escape($notice['text']) . '</div>';
-    }
     echo '<p>';
     foreach ($statusLabels as $status => [$label, $class]) {
         echo '<span class="label label-' . $class . '" style="margin-right:8px">'

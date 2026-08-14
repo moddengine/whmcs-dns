@@ -20,6 +20,34 @@ if (file_exists($autoload)) {
 }
 require_once __DIR__ . '/permissions.php';
 
+/** @return array<string, string> */
+function whmcs_dns_admin_manage_dns_field(string $itemType, int $itemId): array
+{
+    if (whmcs_dns_admin_item_context($itemType, $itemId) === null) {
+        return [];
+    }
+
+    $url = 'addonmodules.php?' . http_build_query([
+        'module' => 'whmcs_dns',
+        'dns_action' => 'manage',
+        'item_type' => $itemType,
+        'item_id' => $itemId,
+        'token' => generate_token('plain'),
+    ]);
+
+    return ['DNS Manager' => '<a class="btn btn-primary btn-sm" href="'
+        . htmlspecialchars($url, ENT_QUOTES, 'UTF-8')
+        . '" target="_blank" rel="noopener"><i class="fas fa-globe" aria-hidden="true"></i> Manage DNS</a>'];
+}
+
+add_hook('AdminClientDomainsTabFields', 1, function ($vars) {
+    return whmcs_dns_admin_manage_dns_field('domain', (int) ($vars['id'] ?? 0));
+});
+
+add_hook('AdminClientServicesTabFields', 1, function ($vars) {
+    return whmcs_dns_admin_manage_dns_field('service', (int) ($vars['id'] ?? 0));
+});
+
 add_hook('ClientAreaProductDetailsOutput', 1, function ($vars) {
     $service = $vars['service'] ?? null;
     if (empty($_SESSION['uid']) || !is_object($service)) {

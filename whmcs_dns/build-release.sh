@@ -18,6 +18,7 @@ cp -a -- \
     "$module_dir/composer.json" \
     "$module_dir/composer.lock" \
     "$module_dir/connect-website.php" \
+    "$module_dir/cpanel-sync.php" \
     "$module_dir/hooks.php" \
     "$module_dir/permissions.php" \
     "$module_dir/refresh.php" \

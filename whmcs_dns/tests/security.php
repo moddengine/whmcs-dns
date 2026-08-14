@@ -148,6 +148,42 @@ foreach (['', '{', '{}', '{"domain":"example.com","ipv4":"10.0.0.1"}'] as $json)
     }
 }
 
+$cpanelRequest = whmcs_dns_cpanel_request(
+    '{"server_id":3,"cpanel_user":"cpuser","domain":"WWW.Example.COM.","type":"a","value":"1.2.3.4"}'
+);
+if ($cpanelRequest !== [
+    'server_id' => 3,
+    'cpanel_user' => 'cpuser',
+    'domain' => 'www.example.com',
+    'type' => 'A',
+    'value' => '1.2.3.4',
+]) {
+    throw new RuntimeException('cPanel request normalization failed.');
+}
+$dkimRequest = whmcs_dns_cpanel_request(
+    '{"server_id":3,"cpanel_user":"cpuser","domain":"default._domainkey.example.com","type":"TXT","value":"v=DKIM1; p=abc"}'
+);
+if ($dkimRequest['domain'] !== 'default._domainkey.example.com') {
+    throw new RuntimeException('cPanel DKIM request validation failed.');
+}
+foreach ([
+    '{}',
+    '{"server_id":0,"cpanel_user":"cpuser","domain":"example.com","type":"A","value":"1.2.3.4"}',
+    '{"server_id":3,"cpanel_user":"bad-user","domain":"example.com","type":"A","value":"1.2.3.4"}',
+    '{"server_id":3,"cpanel_user":"cpuser","domain":"example.com","type":"A","value":"invalid"}',
+    '{"server_id":3,"cpanel_user":"cpuser","domain":"example.com","type":"MX","value":"mail.example.com"}',
+] as $json) {
+    try {
+        whmcs_dns_cpanel_request($json);
+        throw new RuntimeException("Invalid cPanel request accepted: {$json}");
+    } catch (JsonException | InvalidArgumentException) {
+    }
+}
+if (!whmcs_dns_hostname_in_zone('www.example.com', 'example.com')
+    || whmcs_dns_hostname_in_zone('notexample.com', 'example.com')) {
+    throw new RuntimeException('cPanel zone boundary check failed.');
+}
+
 $plan = whmcs_dns_website_record_plan([
     ['recordId' => '1', 'type' => 'A', 'host' => '', 'value' => '8.8.8.8'],
     ['recordId' => '2', 'type' => 'A', 'host' => '@', 'value' => '8.8.8.8'],
@@ -271,6 +307,24 @@ if ($module === false
     || !str_contains($module, 'Permanently delete the Bunny DNS zone')
     || str_contains($module, 'name="zones[]"')) {
     throw new RuntimeException('Admin reconciliation mutation controls failed.');
+}
+
+$hooks = file_get_contents(dirname(__DIR__) . '/hooks.php');
+if ($hooks === false
+    || !str_contains($hooks, "add_hook('AdminClientDomainsTabFields'")
+    || !str_contains($hooks, "add_hook('AdminClientServicesTabFields'")
+    || !str_contains($hooks, 'target="_blank" rel="noopener"')
+    || !str_contains($module, "localAPI('CreateSsoToken'")
+    || !str_contains($module, "'destination' => 'sso:custom_redirect'")
+    || !str_contains($module, "check_token('WHMCS.admin.default')")) {
+    throw new RuntimeException('Admin DNS manager SSO controls failed.');
+}
+
+$cpanelEndpoint = file_get_contents(dirname(__DIR__) . '/cpanel-sync.php');
+if ($cpanelEndpoint === false
+    || !str_contains($cpanelEndpoint, 'cpanel_sync_api_token_hash')
+    || !str_contains($module, 'rotate_cpanel_sync_api_key')) {
+    throw new RuntimeException('cPanel synchronization endpoint or key rotation is missing.');
 }
 
 echo "Security checks passed.\n";

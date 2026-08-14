@@ -29,6 +29,32 @@ function whmcs_dns_registrable_domain(string $hostname): ?string
     return $domain !== '' && $domain[0] !== '.' ? $domain : null;
 }
 
+/** @return array{client_id: int, domain_name: string}|null */
+function whmcs_dns_admin_item_context(string $itemType, int $itemId): ?array
+{
+    if ($itemId <= 0 || !in_array($itemType, ['domain', 'service'], true)) {
+        return null;
+    }
+
+    $item = Capsule::table($itemType === 'domain' ? 'tbldomains' : 'tblhosting')
+        ->select('userid', 'domain', $itemType === 'domain' ? 'status' : 'domainstatus')
+        ->where('id', $itemId)
+        ->first();
+    $status = $itemType === 'domain' ? ($item->status ?? null) : ($item->domainstatus ?? null);
+    if (!$item || $status !== 'Active') {
+        return null;
+    }
+
+    $domainName = $itemType === 'domain'
+        ? whmcs_dns_normalize_hostname((string) $item->domain)
+        : whmcs_dns_registrable_domain((string) $item->domain);
+    if ($domainName === null || filter_var($domainName, FILTER_VALIDATE_DOMAIN, FILTER_FLAG_HOSTNAME) === false) {
+        return null;
+    }
+
+    return ['client_id' => (int) $item->userid, 'domain_name' => $domainName];
+}
+
 function whmcs_dns_client_can_manage_domain_name(int $clientId, string $domainName): bool
 {
     $domainName = whmcs_dns_normalize_hostname($domainName);

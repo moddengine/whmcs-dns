@@ -1,0 +1,23 @@
+[Unit]
+Description=WHMCS-DNS cPanel bridge
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/sbin/whmcs-dns-bridge
+Restart=on-failure
+RestartSec=5s
+RuntimeDirectory=whmcs-dns-bridge
+RuntimeDirectoryMode=0700
+StateDirectory=whmcs-dns-bridge
+StateDirectoryMode=0700
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/run/whmcs-dns-bridge /var/lib/whmcs-dns-bridge
+
+[Install]
+WantedBy=multi-user.target

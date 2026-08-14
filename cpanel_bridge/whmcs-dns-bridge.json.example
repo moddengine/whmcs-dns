@@ -1,0 +1,7 @@
+{
+  "endpoint": "https://whmcs.example/modules/addons/whmcs_dns/cpanel-sync.php",
+  "token": "replace-with-cpanel-sync-api-key",
+  "server_id": 3,
+  "process_synczones": false,
+  "timeout_seconds": 30
+}
