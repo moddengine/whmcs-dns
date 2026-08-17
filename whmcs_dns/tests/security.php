@@ -91,6 +91,23 @@ if ($statuses !== [
     throw new RuntimeException('Bunny reconciliation classification failed.');
 }
 
+$existingBunnyZone = whmcs_dns_find_bunny_zone([
+    ['id' => 42, 'domain' => 'unrelated.example'],
+    ['id' => 84, 'domain' => 'EXAMPLE.COM.'],
+], 'example.com');
+if ($existingBunnyZone !== ['id' => '84', 'domain' => 'example.com']
+    || whmcs_dns_find_bunny_zone([], 'example.com') !== null) {
+    throw new RuntimeException('Existing Bunny zone lookup failed.');
+}
+try {
+    whmcs_dns_find_bunny_zone([
+        ['id' => 1, 'domain' => 'example.com'],
+        ['id' => 2, 'domain' => 'EXAMPLE.COM.'],
+    ], 'example.com');
+    throw new RuntimeException('Duplicate exact Bunny zones were accepted.');
+} catch (UnexpectedValueException) {
+}
+
 foreach ([
     'portal.site.com' => 'site.com',
     'staff.company.co.nz' => 'company.co.nz',

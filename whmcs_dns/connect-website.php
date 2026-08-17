@@ -67,42 +67,17 @@ try {
         throw new UnexpectedValueException('The local zone belongs to another WHMCS client.', 409);
     }
 
-    $locator = new BunnyProvider(['apikey' => $apiKey]);
-    $remoteZones = array_values(array_filter(
-        $locator->listDomains(),
-        fn ($remote): bool => is_array($remote)
-            && whmcs_dns_normalize_hostname((string) ($remote['domain'] ?? '')) === $domain
-    ));
-    if (count($remoteZones) > 1) {
-        throw new UnexpectedValueException('Multiple exact Bunny zones were found.', 409);
-    }
-    if ($remoteZones === []) {
-        $created = $locator->createDomain($domain);
-        if (!is_array($created) || !is_numeric($created['Id'] ?? null)) {
-            throw new RuntimeException('Bunny did not return the new zone ID.');
-        }
-        $zoneId = (string) $created['Id'];
-    } elseif (!is_numeric($remoteZones[0]['id'] ?? null)) {
-        throw new RuntimeException('Bunny returned an invalid zone ID.');
-    } else {
-        $zoneId = (string) $remoteZones[0]['id'];
-    }
-
-    $config = json_encode(['provider' => 'Bunny'], JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR);
-    $now = date('Y-m-d H:i:s');
-    if ($zone) {
-        Capsule::table(WHMCSDNS_TABLE_ZONES)->where('id', $zone->id)->update([
-            'client_id' => $clientId, 'zoneId' => $zoneId, 'config' => $config, 'updated_at' => $now,
-        ]);
-    } else {
-        Capsule::table(WHMCSDNS_TABLE_ZONES)->insert([
-            'client_id' => $clientId, 'domain_name' => $domain, 'zoneId' => $zoneId, 'config' => $config,
-            'created_at' => $now, 'updated_at' => $now,
+    if (!$zone) {
+        whmcs_dns_enable_domain($clientId, [
+            'domain_name' => $domain,
+            'provider' => 'Bunny',
+            'apikey' => $apiKey,
         ]);
     }
 
     whmcs_dns_refresh_bunny_zone($domain, $apiKey);
     $zone = Capsule::table(WHMCSDNS_TABLE_ZONES)->where('domain_name', $domain)->first();
+    $zoneId = (string) $zone->zoneId;
     $records = Capsule::table(WHMCSDNS_TABLE_RECORDS)->where('domain_id', $zone->id)->get()->map(
         fn ($record): array => (array) $record
     )->toArray();

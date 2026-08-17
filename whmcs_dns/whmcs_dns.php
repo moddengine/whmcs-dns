@@ -41,7 +41,7 @@ function whmcs_dns_config(): array
         'description' => 'DNS management addon enabling zone and record control via external providers',
         'author'      => 'Namingo',
         'language'    => 'english',
-        'version'     => '2.3.0',
+        'version'     => '2.3.1',
         'fields'      => [
             'provider' => [
                 'FriendlyName' => 'Provider',
@@ -553,6 +553,78 @@ function whmcs_dns_provider_record_config(string $domainName): array
 }
 
 /**
+ * @param array<int, mixed> $zones
+ * @return array{id: string, domain: string}|null
+ */
+function whmcs_dns_find_bunny_zone(array $zones, string $domainName): ?array
+{
+    $domainName = whmcs_dns_normalize_hostname($domainName);
+    $matches = [];
+    foreach ($zones as $zone) {
+        if (!is_array($zone)
+            || whmcs_dns_normalize_hostname((string) ($zone['domain'] ?? '')) !== $domainName) {
+            continue;
+        }
+        if (!is_numeric($zone['id'] ?? null)) {
+            throw new RuntimeException('Bunny returned an invalid zone ID.');
+        }
+        $matches[] = ['id' => (string) $zone['id'], 'domain' => $domainName];
+    }
+    if (count($matches) > 1) {
+        throw new UnexpectedValueException('Multiple exact Bunny zones were found.', 409);
+    }
+    return $matches[0] ?? null;
+}
+
+/** @param array<string, mixed> $config */
+function whmcs_dns_enable_domain(int $clientId, array $config): bool
+{
+    $domainName = whmcs_dns_normalize_hostname((string) ($config['domain_name'] ?? ''));
+    $providerName = (string) ($config['provider'] ?? '');
+    if ($clientId <= 0 || $providerName === ''
+        || filter_var($domainName, FILTER_VALIDATE_DOMAIN, FILTER_FLAG_HOSTNAME) === false) {
+        throw new InvalidArgumentException('A client, domain, and DNS provider are required.');
+    }
+    $config['domain_name'] = $domainName;
+
+    $zone = Capsule::table(WHMCSDNS_TABLE_ZONES)->where('domain_name', $domainName)->first();
+    if ($zone) {
+        if ((int) $zone->client_id !== $clientId) {
+            throw new UnexpectedValueException('The local zone belongs to another WHMCS client.', 409);
+        }
+        return false;
+    }
+
+    if ($providerName === 'Bunny') {
+        $remote = whmcs_dns_find_bunny_zone(
+            (new BunnyProvider(['apikey' => (string) ($config['apikey'] ?? '')]))->listDomains(),
+            $domainName
+        );
+        if ($remote !== null) {
+            $now = date('Y-m-d H:i:s');
+            Capsule::table(WHMCSDNS_TABLE_ZONES)->insert([
+                'client_id' => $clientId,
+                'domain_name' => $domainName,
+                'zoneId' => $remote['id'],
+                'config' => json_encode(['provider' => 'Bunny'], JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR),
+                'created_at' => $now,
+                'updated_at' => $now,
+            ]);
+            return false;
+        }
+    }
+
+    (new PlexService(Capsule::connection()->getPdo()))->createDomain([
+        'client_id' => $clientId,
+        'config' => json_encode($config, JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR),
+    ]);
+    if (!Capsule::table(WHMCSDNS_TABLE_ZONES)->where('domain_name', $domainName)->first()) {
+        throw new RuntimeException('The provider zone was created without a local zone mapping.');
+    }
+    return true;
+}
+
+/**
  * @param array{server_id: int, cpanel_user: string, domain: string, type: string, value: string} $request
  * @return array{status: string, action: string, zone: string}
  */
@@ -579,10 +651,10 @@ function whmcs_dns_sync_cpanel_record(array $request): array
         ->where('client_id', $context['client_id'])
         ->first();
     if (!$zone) {
-        $plex->createDomain([
-            'client_id' => $context['client_id'],
-            'config' => json_encode($config, JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR),
-        ]);
+        whmcs_dns_enable_domain($context['client_id'], $config);
+        if (($config['provider'] ?? null) === 'Bunny') {
+            whmcs_dns_refresh_bunny_zone($zoneName, (string) $config['apikey']);
+        }
         $zone = Capsule::table(WHMCSDNS_TABLE_ZONES)
             ->where('domain_name', $zoneName)
             ->where('client_id', $context['client_id'])
@@ -1054,14 +1126,10 @@ function whmcs_dns_admin_enable(array $row, string $apiKey): int
 
     $domainName = (string) $row['domain'];
     $clientId = (int) $row['eligible_client_ids'][0];
-    $plex = new PlexService(Capsule::connection()->getPdo());
-    $plex->createDomain([
-        'client_id' => $clientId,
-        'config' => json_encode([
-            'domain_name' => $domainName,
-            'provider' => 'Bunny',
-            'apikey' => $apiKey,
-        ], JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR),
+    whmcs_dns_enable_domain($clientId, [
+        'domain_name' => $domainName,
+        'provider' => 'Bunny',
+        'apikey' => $apiKey,
     ]);
 
     return whmcs_dns_refresh_bunny_zone($domainName, $apiKey);
@@ -1495,30 +1563,17 @@ function whmcs_dns_clientarea(array $vars): array
                                 }
                             }
 
-                            $domainOrder = [
-                                'client_id' => $clientId,
-                                'config'    => json_encode($cfg, JSON_UNESCAPED_SLASHES),
-                            ];
-
-                            $plex->createDomain($domainOrder);
-
-                            // Ensure local row exists if PlexDNS didn't insert it itself
-                            $zone = Capsule::table(WHMCSDNS_TABLE_ZONES)->where('domain_name', $domainName)->first();
-                            if (!$zone) {
-                                Capsule::table(WHMCSDNS_TABLE_ZONES)->insert([
-                                    'client_id'   => $clientId,
-                                    'domain_name' => $domainName,
-                                    'config'      => $domainOrder['config'],
-                                    'created_at'  => date('Y-m-d H:i:s'),
-                                    'updated_at'  => date('Y-m-d H:i:s'),
-                                ]);
-                                $zone = Capsule::table(WHMCSDNS_TABLE_ZONES)
-                                    ->where('domain_name', $domainName)
-                                    ->where('client_id', $clientId)
-                                    ->first();
+                            $created = whmcs_dns_enable_domain($clientId, $cfg);
+                            if ($provider === 'Bunny') {
+                                whmcs_dns_refresh_bunny_zone($domainName, $apikey);
                             }
-
-                            $messageText = 'DNS enabled. Zone created.';
+                            $zone = Capsule::table(WHMCSDNS_TABLE_ZONES)
+                                ->where('domain_name', $domainName)
+                                ->where('client_id', $clientId)
+                                ->first();
+                            $messageText = $created
+                                ? 'DNS enabled. Zone created.'
+                                : 'DNS enabled. Existing Bunny zone synced.';
                         }
 
                         if ($applyCustomNameservers) {
