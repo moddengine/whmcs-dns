@@ -137,7 +137,9 @@ $apiToken = bin2hex(random_bytes(32));
 $apiHash = password_hash($apiToken, PASSWORD_BCRYPT);
 if (!str_starts_with($apiHash, '$2y$')
     || !whmcs_dns_api_token_valid('Bearer ' . $apiToken, $apiHash)
+    || !whmcs_dns_api_token_valid('', $apiHash, $apiToken)
     || whmcs_dns_api_token_valid('Bearer wrong', $apiHash)
+    || whmcs_dns_api_token_valid('', $apiHash, 'wrong')
     || whmcs_dns_api_token_valid('Basic ' . $apiToken, $apiHash)) {
     throw new RuntimeException('Automation API authentication failed.');
 }

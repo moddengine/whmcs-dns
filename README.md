@@ -98,13 +98,13 @@ Rows distinguish zones that are in sync, missing from Bunny, in need of local re
 
 ### Bunny automation APIs
 
-Generate or rotate the separate endpoint keys under **Addons → DNS Hosting → Automation API Keys**. Copy each generated key when it is shown; only its bcrypt hash is saved in the addon settings. Send the key as a bearer token.
+Generate or rotate the separate endpoint keys under **Addons → DNS Hosting → Automation API Keys**. Copy each generated key when it is shown; only its bcrypt hash is saved in the addon settings. Send the key in the `Auth-Key` header. Bearer tokens remain supported when the web server forwards the `Authorization` header to PHP.
 
 Refresh the local record cache from Bunny:
 
 ```http
 POST /modules/addons/whmcs_dns/refresh.php
-Authorization: Bearer <refresh-key>
+Auth-Key: <refresh-key>
 Content-Type: application/json
 
 {"domain":"example.com"}
@@ -114,7 +114,7 @@ Connect a website to an exact active WHMCS domain:
 
 ```http
 POST /modules/addons/whmcs_dns/connect-website.php
-Authorization: Bearer <connect-website-key>
+Auth-Key: <connect-website-key>
 Content-Type: application/json
 
 {"domain":"example.com","ipv4":"203.0.114.10"}
@@ -159,8 +159,8 @@ From your server:
 
 ```bash
 cd /tmp
-wget https://github.com/moddengine/whmcs-dns/releases/download/v2.4.0/whmcs-dns-2.4.0.zip
-unzip whmcs-dns-2.4.0.zip
+wget https://github.com/moddengine/whmcs-dns/releases/download/v2.4.1/whmcs-dns-2.4.1.zip
+unzip whmcs-dns-2.4.1.zip
 cp -a whmcs_dns /path/to/whmcs/modules/addons/
 ```
 

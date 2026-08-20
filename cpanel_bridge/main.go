@@ -637,7 +637,7 @@ func (s *spool) deliver(queued job) error {
 	if err != nil {
 		return err
 	}
-	request.Header.Set("Authorization", "Bearer "+s.cfg.Token)
+	request.Header.Set("Auth-Key", s.cfg.Token)
 	request.Header.Set("Content-Type", "application/json")
 	response, err := s.client.Do(request)
 	if err != nil {

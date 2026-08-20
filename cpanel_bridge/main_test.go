@@ -125,6 +125,9 @@ func TestSpoolDeliversOneAtATimeAndRetries(t *testing.T) {
 	var calls atomic.Int32
 	var values []string
 	client := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		if request.Header.Get("Auth-Key") != "secret" {
+			t.Errorf("Auth-Key header = %q", request.Header.Get("Auth-Key"))
+		}
 		current := inFlight.Add(1)
 		defer inFlight.Add(-1)
 		if current > maximum.Load() {

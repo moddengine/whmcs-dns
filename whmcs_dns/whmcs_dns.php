@@ -41,7 +41,7 @@ function whmcs_dns_config(): array
         'description' => 'DNS management addon enabling zone and record control via external providers',
         'author'      => 'Namingo',
         'language'    => 'english',
-        'version'     => '2.4.0',
+        'version'     => '2.4.1',
         'fields'      => [
             'provider' => [
                 'FriendlyName' => 'Provider',
@@ -286,14 +286,18 @@ function whmcs_dns_save_bunny_zone_note(
     }
 }
 
-function whmcs_dns_api_token_valid(string $authorization, string $configuredHash): bool
+function whmcs_dns_api_token_valid(string $authorization, string $configuredHash, string $authKey = ''): bool
 {
-    if (!preg_match('/^Bearer\s+(\S+)$/i', trim($authorization), $matches)
-        || !preg_match('/^\$2[ayb]\$/', $configuredHash)) {
+    if (!preg_match('/^\$2[ayb]\$/', $configuredHash)) {
         return false;
     }
 
-    return password_verify($matches[1], $configuredHash);
+    if ($authKey !== '') {
+        return password_verify(trim($authKey), $configuredHash);
+    }
+
+    return preg_match('/^Bearer\s+(\S+)$/i', trim($authorization), $matches) === 1
+        && password_verify($matches[1], $configuredHash);
 }
 
 /**
@@ -1348,7 +1352,7 @@ function whmcs_dns_output(array $vars): void
     $newApiKey = $_SESSION['whmcs_dns_new_api_key'] ?? null;
     unset($_SESSION['whmcs_dns_new_api_key']);
 
-    echo '<h2>Automation API Keys</h2>';
+    echo '<details' . (is_array($newApiKey) ? ' open' : '') . '><summary><strong>Automation API Keys</strong></summary>';
     echo '<p>Keys are shown once. Rotating a key immediately invalidates the previous key for that endpoint.</p>';
     if (is_array($newApiKey) && isset($newApiKey['label'], $newApiKey['key'])) {
         echo '<div class="alert alert-warning"><strong>' . $escape($newApiKey['label'])
@@ -1364,6 +1368,7 @@ function whmcs_dns_output(array $vars): void
             . ($configured ? ' onclick="return confirm(&quot;Replace the current ' . $escape($label) . ' key?&quot;)"' : '') . '>'
             . ($configured ? 'Rotate ' : 'Generate ') . $escape($label) . ' key</button></form>';
     }
+    echo '</details>';
     if ($notice !== null) {
         echo '<div class="alert alert-' . $escape($notice['type']) . '">' . $escape($notice['text']) . '</div>';
         $notice = null;
