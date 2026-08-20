@@ -12,11 +12,11 @@ function whmcs_dns_normalize_hostname(string $hostname): string
     return strtolower(rtrim(trim($hostname), '.'));
 }
 
-function whmcs_dns_registrable_domain(string $hostname): ?string
+function whmcs_dns_registrable_domain(string $hostname, bool $allowUnderscores = false): ?string
 {
     $hostname = whmcs_dns_normalize_hostname($hostname);
     if ($hostname === '' || strlen($hostname) > 253
-        || filter_var($hostname, FILTER_VALIDATE_DOMAIN, FILTER_FLAG_HOSTNAME) === false) {
+        || filter_var($allowUnderscores ? str_replace('_', 'a', $hostname) : $hostname, FILTER_VALIDATE_DOMAIN, FILTER_FLAG_HOSTNAME) === false) {
         return null;
     }
 

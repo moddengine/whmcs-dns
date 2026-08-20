@@ -117,6 +117,10 @@ foreach ([
         throw new RuntimeException("Registrable domain parsing failed for {$hostname}.");
     }
 }
+if (whmcs_dns_registrable_domain('default._domainkey.cpdemo.modd.au', true) !== 'modd.au'
+    || whmcs_dns_registrable_domain('default._domainkey.cpdemo.modd.au') !== null) {
+    throw new RuntimeException('cPanel DKIM registrable domain parsing failed.');
+}
 
 foreach (['', 'not a domain', '192.0.2.1', 'co.nz'] as $hostname) {
     if (whmcs_dns_registrable_domain($hostname) !== null) {

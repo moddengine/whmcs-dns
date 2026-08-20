@@ -41,7 +41,7 @@ function whmcs_dns_config(): array
         'description' => 'DNS management addon enabling zone and record control via external providers',
         'author'      => 'Namingo',
         'language'    => 'english',
-        'version'     => '2.4.1',
+        'version'     => '2.4.2',
         'fields'      => [
             'provider' => [
                 'FriendlyName' => 'Provider',
@@ -541,7 +541,7 @@ function whmcs_dns_cpanel_relaxed_context(array $sources, array $zones, string $
 function whmcs_dns_cpanel_record_context(int $serverId, string $user, string $domain): array
 {
     if ($user === '') {
-        $apex = whmcs_dns_registrable_domain($domain);
+        $apex = whmcs_dns_registrable_domain($domain, true);
         if ($apex === null) {
             throw new UnexpectedValueException('The DNS record does not have a registrable domain.', 409);
         }
