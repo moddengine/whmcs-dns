@@ -124,7 +124,7 @@ The connect endpoint creates or reuses the Bunny zone, sets the apex A record an
 
 ### cPanel DNS bridge
 
-The optional `whmcs-dns-bridge` runs on a WHM/cPanel host and sends selected cPanel DNS updates to this addon. It imports only apex/configured-domain A records and `*._domainkey` TXT records. cPanel-generated service hosts, SPF, DMARC, DCV, MX, CNAME, SRV, NS, SOA, and other records are ignored.
+The optional `whmcs-dns-bridge` runs on a WHM/cPanel host and sends selected cPanel DNS updates to this addon. By default it imports only apex/configured-domain A records and `*._domainkey` TXT records. cPanel-generated service hosts, SPF, DMARC, DCV, MX, CNAME, SRV, NS, SOA, and other records are ignored.
 
 1. In **Addons → DNS Hosting → Automation API Keys**, generate a **cPanel Sync API** key.
 2. Download the bridge archive matching the cPanel host architecture and extract it.
@@ -137,6 +137,8 @@ The daemon acknowledges a cPanel operation only after its record updates are dur
 Synchronization is one-way from cPanel to WHMCS-DNS. Changes made in WHMCS-DNS and record deletions are not sent back to cPanel; newer pending values for the same record replace older retries.
 
 `process_synczones` is disabled by default. Enable it in the adjacent JSON configuration only when bulk/initial cPanel zone synchronization should be imported. Zones containing more than 250 total records are rejected before filtering.
+
+For migrations or accounts created outside WHMCS, set `relaxed_sync` to `true` in the bridge JSON configuration. Relaxed sync omits the cPanel username and imports every A record inside the zone, including mail and cPanel service hosts, plus `*._domainkey` TXT records. WHMCS maps each update to the longest matching `Active` or `Pending` registered domain or hosting-service domain and rejects ambiguous ownership. The `server_id` is retained for compatibility but is not part of relaxed ownership matching. Enable this only for a trusted bridge key: the key can update any uniquely eligible WHMCS domain regardless of its current cPanel server or username.
 
 If WHMCS-DNS is the customer-facing editor, separately hide cPanel's Zone Editor through WHM Feature Manager. You may also disable the local nameserver daemon, but retain cPanel's DNS role and `dnsadmin` integration. These are deployment choices; the bridge does not modify cPanel settings.
 
@@ -157,8 +159,8 @@ From your server:
 
 ```bash
 cd /tmp
-wget https://github.com/moddengine/whmcs-dns/releases/download/v2.3.0/whmcs-dns-2.3.0.zip
-unzip whmcs-dns-2.3.0.zip
+wget https://github.com/moddengine/whmcs-dns/releases/download/v2.4.0/whmcs-dns-2.4.0.zip
+unzip whmcs-dns-2.4.0.zip
 cp -a whmcs_dns /path/to/whmcs/modules/addons/
 ```
 

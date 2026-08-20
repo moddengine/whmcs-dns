@@ -41,7 +41,7 @@ function whmcs_dns_config(): array
         'description' => 'DNS management addon enabling zone and record control via external providers',
         'author'      => 'Namingo',
         'language'    => 'english',
-        'version'     => '2.3.1',
+        'version'     => '2.4.0',
         'fields'      => [
             'provider' => [
                 'FriendlyName' => 'Provider',
@@ -448,7 +448,7 @@ function whmcs_dns_cpanel_request(string $rawBody): array
     if ($serverId === false) {
         throw new InvalidArgumentException('A valid server_id is required.');
     }
-    if (!preg_match('/^[a-z][a-z0-9_]{0,15}$/', $user)) {
+    if ($user !== '' && !preg_match('/^[a-z][a-z0-9_]{0,15}$/', $user)) {
         throw new InvalidArgumentException('A valid cPanel username is required.');
     }
     $validDomain = filter_var($domain, FILTER_VALIDATE_DOMAIN, FILTER_FLAG_HOSTNAME) !== false;
@@ -485,9 +485,110 @@ function whmcs_dns_hostname_in_zone(string $hostname, string $zone): bool
     return $hostname === $zone || str_ends_with($hostname, '.' . $zone);
 }
 
+/**
+ * @param array<int, array{client_id: int, domain: string, status: string}> $sources
+ * @param array<int, array{client_id: int, domain: string}> $zones
+ * @return array{client_id: int, zone: string}
+ */
+function whmcs_dns_cpanel_relaxed_context(array $sources, array $zones, string $domain): array
+{
+    $matches = [];
+    foreach ($sources as $source) {
+        $zone = whmcs_dns_normalize_hostname($source['domain']);
+        if (!in_array($source['status'], ['Active', 'Pending'], true) || $zone === ''
+            || !whmcs_dns_hostname_in_zone($domain, $zone)) {
+            continue;
+        }
+        $matches[] = ['client_id' => $source['client_id'], 'zone' => $zone];
+    }
+    if ($matches === []) {
+        throw new UnexpectedValueException('The DNS record does not map to an eligible WHMCS domain.', 409);
+    }
+
+    $length = max(array_map(static fn (array $match): int => strlen($match['zone']), $matches));
+    $matches = array_values(array_filter(
+        $matches,
+        static fn (array $match): bool => strlen($match['zone']) === $length
+    ));
+    $clientIds = array_values(array_unique(array_column($matches, 'client_id')));
+    if (count($clientIds) !== 1) {
+        throw new UnexpectedValueException('The DNS record maps to multiple WHMCS customers.', 409);
+    }
+
+    $clientId = (int) $clientIds[0];
+    $managed = [];
+    foreach ($zones as $zone) {
+        $zoneName = whmcs_dns_normalize_hostname($zone['domain']);
+        if ($zoneName === '' || !whmcs_dns_hostname_in_zone($domain, $zoneName)) {
+            continue;
+        }
+        if ($zone['client_id'] !== $clientId) {
+            throw new UnexpectedValueException('The local DNS zone belongs to another WHMCS client.', 409);
+        }
+        $managed[$zoneName] = $zoneName;
+    }
+
+    $candidates = $managed !== [] ? array_values($managed) : [$matches[0]['zone']];
+    usort($candidates, static fn (string $left, string $right): int => strlen($right) <=> strlen($left));
+    return ['client_id' => $clientId, 'zone' => $candidates[0]];
+}
+
 /** @return array{client_id: int, zone: string} */
 function whmcs_dns_cpanel_record_context(int $serverId, string $user, string $domain): array
 {
+    if ($user === '') {
+        $apex = whmcs_dns_registrable_domain($domain);
+        if ($apex === null) {
+            throw new UnexpectedValueException('The DNS record does not have a registrable domain.', 409);
+        }
+        $sources = Capsule::table('tbldomains')
+            ->select('userid', 'domain', 'status')
+            ->whereIn('status', ['Active', 'Pending'])
+            ->where('domain', $apex)
+            ->get()
+            ->map(static fn ($item): array => [
+                'client_id' => (int) $item->userid,
+                'domain' => whmcs_dns_normalize_hostname((string) $item->domain),
+                'status' => (string) $item->status,
+            ])
+            ->toArray();
+
+        foreach (Capsule::table('tblhosting')
+            ->select('userid', 'domain', 'domainstatus')
+            ->whereIn('domainstatus', ['Active', 'Pending'])
+            ->where(static function ($query) use ($apex): void {
+                $query->where('domain', $apex)->orWhere('domain', 'like', '%.' . $apex);
+            })
+            ->get() as $service) {
+            $serviceApex = whmcs_dns_registrable_domain((string) $service->domain);
+            if ($serviceApex !== null) {
+                $sources[] = [
+                    'client_id' => (int) $service->userid,
+                    'domain' => $serviceApex,
+                    'status' => (string) $service->domainstatus,
+                ];
+            }
+        }
+
+        $zoneNames = [];
+        for ($name = $domain; whmcs_dns_hostname_in_zone($name, $apex); $name = substr($name, strpos($name, '.') + 1)) {
+            $zoneNames[] = $name;
+            if ($name === $apex) {
+                break;
+            }
+        }
+        $zones = Capsule::table(WHMCSDNS_TABLE_ZONES)
+            ->select('client_id', 'domain_name')
+            ->whereIn('domain_name', $zoneNames)
+            ->get()
+            ->map(static fn ($zone): array => [
+                'client_id' => (int) $zone->client_id,
+                'domain' => whmcs_dns_normalize_hostname((string) $zone->domain_name),
+            ])
+            ->toArray();
+        return whmcs_dns_cpanel_relaxed_context($sources, $zones, $domain);
+    }
+
     $services = Capsule::table('tblhosting')
         ->select('userid', 'domain')
         ->where('server', $serverId)

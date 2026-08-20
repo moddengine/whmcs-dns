@@ -38,6 +38,7 @@ type config struct {
 	Token            string `json:"token"`
 	ServerID         int    `json:"server_id"`
 	ProcessSynczones bool   `json:"process_synczones"`
+	RelaxedSync      bool   `json:"relaxed_sync"`
 	TimeoutSeconds   int    `json:"timeout_seconds"`
 }
 
@@ -63,7 +64,7 @@ type socketResponse struct {
 
 type updateRequest struct {
 	ServerID   int    `json:"server_id"`
-	CpanelUser string `json:"cpanel_user"`
+	CpanelUser string `json:"cpanel_user,omitempty"`
 	Domain     string `json:"domain"`
 	Type       string `json:"type"`
 	Value      string `json:"value"`
@@ -92,6 +93,9 @@ func main() {
 	cfg, err := loadConfig()
 	if err != nil {
 		logger.Fatal(err)
+	}
+	if cfg.RelaxedSync {
+		logger.Printf("WARNING: relaxed sync enabled; cPanel account ownership checks are disabled")
 	}
 	s := &spool{
 		dir:    defaultState,
@@ -279,17 +283,22 @@ func (s *spool) accept(request socketRequest) socketResponse {
 		if zone == "" {
 			return socketResponse{Error: "invalid zone"}
 		}
-		user := strings.TrimSpace(request.CpanelUser)
-		if user == "" {
+		user := ""
+		var allowed map[string]bool
+		if !s.cfg.RelaxedSync {
+			user = strings.TrimSpace(request.CpanelUser)
+			if user == "" {
+				var err error
+				user, err = ownerForZone(zone)
+				if err != nil {
+					return socketResponse{Retryable: true, Error: err.Error()}
+				}
+			}
 			var err error
-			user, err = ownerForZone(zone)
+			allowed, err = cpanelDomains(user, zone)
 			if err != nil {
 				return socketResponse{Retryable: true, Error: err.Error()}
 			}
-		}
-		allowed, err := cpanelDomains(user, zone)
-		if err != nil {
-			return socketResponse{Retryable: true, Error: err.Error()}
 		}
 		updates, err := recordsFromZone(input.Data, zone, allowed)
 		if err != nil {
@@ -416,7 +425,10 @@ func recordsFromZone(zoneData, zone string, allowed map[string]bool) ([]updateRe
 		var update updateRequest
 		switch typed := record.(type) {
 		case *dns.A:
-			if !allowed[name] {
+			if name != zone && !strings.HasSuffix(name, "."+zone) {
+				continue
+			}
+			if allowed != nil && !allowed[name] {
 				continue
 			}
 			update = updateRequest{Domain: name, Type: "A", Value: typed.A.String()}

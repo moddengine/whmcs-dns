@@ -43,6 +43,63 @@ _cpanel-dcv-test-record 300 IN TXT "temporary"
 	}
 }
 
+func TestRecordsFromZoneRelaxedIncludesAllInZoneARecords(t *testing.T) {
+	zone := `$ORIGIN example.com.
+@ 300 IN A 1.2.3.4
+www 300 IN A 1.2.3.5
+mail 300 IN A 1.2.3.6
+cpanel 300 IN A 1.2.3.7
+outside.example.net. 300 IN A 1.2.3.8
+default._domainkey 300 IN TXT "v=DKIM1; p=abc"
+@ 300 IN TXT "v=spf1 -all"
+`
+	records, err := recordsFromZone(zone, "example.com", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []updateRequest{
+		{Domain: "cpanel.example.com", Type: "A", Value: "1.2.3.7"},
+		{Domain: "default._domainkey.example.com", Type: "TXT", Value: "v=DKIM1; p=abc"},
+		{Domain: "example.com", Type: "A", Value: "1.2.3.4"},
+		{Domain: "mail.example.com", Type: "A", Value: "1.2.3.6"},
+		{Domain: "www.example.com", Type: "A", Value: "1.2.3.5"},
+	}
+	if encoded, expected := mustJSON(records), mustJSON(want); encoded != expected {
+		t.Fatalf("records = %s, want %s", encoded, expected)
+	}
+}
+
+func TestRelaxedAcceptDoesNotNeedCpanelOwner(t *testing.T) {
+	s := &spool{
+		dir: t.TempDir(), wake: make(chan struct{}, 1),
+		cfg: config{ServerID: 3, RelaxedSync: true}, logger: logForTest(t),
+	}
+	if err := s.init(); err != nil {
+		t.Fatal(err)
+	}
+	response := s.accept(socketRequest{
+		Action: "QUICKZONEADD", DNSUniqID: "one",
+		Zones: []zoneInput{{Zone: "example.com", Data: "@ 300 IN A 1.2.3.4\nmail 300 IN A 1.2.3.5\n"}},
+	})
+	if !response.OK || response.Queued != 2 {
+		t.Fatalf("response = %+v", response)
+	}
+	entries, err := os.ReadDir(filepath.Join(s.dir, "ready"))
+	if err != nil || len(entries) != 2 {
+		t.Fatalf("queued jobs = %d: %v", len(entries), err)
+	}
+	for _, entry := range entries {
+		data, err := os.ReadFile(filepath.Join(s.dir, "ready", entry.Name()))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var queued job
+		if json.Unmarshal(data, &queued) != nil || queued.Request.CpanelUser != "" {
+			t.Fatalf("invalid relaxed job: %s", data)
+		}
+	}
+}
+
 func TestRecordsFromZoneLimitAndDuplicates(t *testing.T) {
 	var zone strings.Builder
 	for i := 0; i < maxZoneRecords; i++ {

@@ -3,5 +3,6 @@
   "token": "replace-with-cpanel-sync-api-key",
   "server_id": 3,
   "process_synczones": false,
+  "relaxed_sync": false,
   "timeout_seconds": 30
 }

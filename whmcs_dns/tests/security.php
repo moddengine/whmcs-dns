@@ -177,6 +177,12 @@ if ($cpanelRequest !== [
 ]) {
     throw new RuntimeException('cPanel request normalization failed.');
 }
+$relaxedCpanelRequest = whmcs_dns_cpanel_request(
+    '{"server_id":3,"domain":"MAIL.Example.COM.","type":"a","value":"1.2.3.4"}'
+);
+if ($relaxedCpanelRequest['cpanel_user'] !== '' || $relaxedCpanelRequest['domain'] !== 'mail.example.com') {
+    throw new RuntimeException('Relaxed cPanel request normalization failed.');
+}
 $dkimRequest = whmcs_dns_cpanel_request(
     '{"server_id":3,"cpanel_user":"cpuser","domain":"default._domainkey.example.com","type":"TXT","value":"v=DKIM1; p=abc"}'
 );
@@ -199,6 +205,48 @@ foreach ([
 if (!whmcs_dns_hostname_in_zone('www.example.com', 'example.com')
     || whmcs_dns_hostname_in_zone('notexample.com', 'example.com')) {
     throw new RuntimeException('cPanel zone boundary check failed.');
+}
+
+$relaxedContext = whmcs_dns_cpanel_relaxed_context([
+    ['client_id' => 10, 'domain' => 'example.com', 'status' => 'Active'],
+    ['client_id' => 11, 'domain' => 'shop.example.com', 'status' => 'Pending'],
+    ['client_id' => 11, 'domain' => 'shop.example.com', 'status' => 'Active'],
+    ['client_id' => 12, 'domain' => 'inactive.example.com', 'status' => 'Suspended'],
+], [
+    ['client_id' => 11, 'domain' => 'shop.example.com'],
+    ['client_id' => 11, 'domain' => 'mail.shop.example.com'],
+], 'mx.mail.shop.example.com');
+if ($relaxedContext !== ['client_id' => 11, 'zone' => 'mail.shop.example.com']) {
+    throw new RuntimeException('Relaxed cPanel longest-domain matching failed.');
+}
+foreach ([
+    [
+        [
+            ['client_id' => 10, 'domain' => 'example.com', 'status' => 'Active'],
+            ['client_id' => 11, 'domain' => 'example.com', 'status' => 'Pending'],
+        ],
+        [],
+        'mail.example.com',
+    ],
+    [
+        [['client_id' => 10, 'domain' => 'example.com', 'status' => 'Active']],
+        [['client_id' => 11, 'domain' => 'example.com']],
+        'mail.example.com',
+    ],
+    [
+        [['client_id' => 10, 'domain' => 'example.com', 'status' => 'Suspended']],
+        [],
+        'mail.example.com',
+    ],
+] as [$sources, $zones, $domain]) {
+    try {
+        whmcs_dns_cpanel_relaxed_context($sources, $zones, $domain);
+        throw new RuntimeException('Unsafe relaxed cPanel ownership accepted.');
+    } catch (UnexpectedValueException $e) {
+        if ($e->getCode() !== 409) {
+            throw $e;
+        }
+    }
 }
 
 $plan = whmcs_dns_website_record_plan([
