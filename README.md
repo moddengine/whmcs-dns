@@ -128,9 +128,9 @@ The optional `whmcs-dns-bridge` runs on a WHM/cPanel host and sends selected cPa
 
 1. In **Addons → DNS Hosting → Automation API Keys**, generate a **cPanel Sync API** key.
 2. Download the bridge archive matching the cPanel host architecture and extract it.
-3. Run `sudo ./install.sh`.
-4. Edit `/usr/local/sbin/whmcs-dns-bridge.json` with the endpoint, key, and the matching WHMCS server ID, then run `sudo systemctl start whmcs-dns-bridge`.
-5. In WHM's DNS Cluster page, add the **WHMCS-DNS** backend with the **Write-only** role. The form credentials are placeholders because communication uses the root-only local socket.
+3. In **WHM → Server Configuration → Tweak Settings → Software**, disable the `dnsadmin` checkbox under **Dormant services**. cPanel requires `dnsadmin` to remain active for custom DNS cluster plugins.
+4. Run `sudo ./install.sh`. The installer enables DNS clustering and creates the **WHMCS-DNS** backend with the **Write-only** role directly because current cPanel releases restrict the WHM add-backend form to bundled modules.
+5. Edit `/usr/local/sbin/whmcs-dns-bridge.json` with the endpoint, key, and the matching WHMCS server ID, then run `sudo systemctl start whmcs-dns-bridge`.
 
 The daemon acknowledges a cPanel operation only after its record updates are durably queued. It delivers one update at a time, retries failures five times, then retains them under `/var/lib/whmcs-dns-bridge/dead`. Inspect logs with `journalctl -u whmcs-dns-bridge`; replay a corrected dead-letter job by resetting its `attempts` field to `0`, then move and rename it in the sibling `ready` directory as `<id>.json` using the `id` stored in the file.
 

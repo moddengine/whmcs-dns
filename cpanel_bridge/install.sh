@@ -17,7 +17,21 @@ install -D -m 0644 "$source_dir/cpanel/Cpanel/NameServer/Remote/WHMCSDNS.pm" \
 install -D -m 0644 "$source_dir/cpanel/Cpanel/NameServer/Setup/Remote/WHMCSDNS.pm" \
     /usr/local/cpanel/Cpanel/NameServer/Setup/Remote/WHMCSDNS.pm
 
+cluster_dir=/var/cpanel/cluster/root/config
+install -d -m 0700 "$cluster_dir"
+printf '%s\n' \
+    '#version 2.0' \
+    'user=root' \
+    'host=whmcs-dns-bridge' \
+    'pass=local-socket' \
+    'module=WHMCSDNS' \
+    'debug=off' \
+    >"$cluster_dir/whmcs-dns-bridge"
+printf 'write-only' >"$cluster_dir/whmcs-dns-bridge-dnsrole"
+chmod 0600 "$cluster_dir/whmcs-dns-bridge" "$cluster_dir/whmcs-dns-bridge-dnsrole"
+touch /var/cpanel/useclusteringdns
+
 systemctl daemon-reload
 systemctl enable whmcs-dns-bridge.service
 
-echo "Installed. Edit /usr/local/sbin/whmcs-dns-bridge.json, start the service, then add the WHMCS-DNS backend in WHM's DNS Cluster page."
+echo "Installed the WHMCS-DNS backend with the Write-only role. Edit /usr/local/sbin/whmcs-dns-bridge.json, then start the service."
