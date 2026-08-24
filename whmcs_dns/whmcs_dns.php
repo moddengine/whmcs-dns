@@ -41,7 +41,7 @@ function whmcs_dns_config(): array
         'description' => 'DNS management addon enabling zone and record control via external providers',
         'author'      => 'Namingo',
         'language'    => 'english',
-        'version'     => '2.4.2',
+        'version'     => '2.4.3',
         'fields'      => [
             'provider' => [
                 'FriendlyName' => 'Provider',
@@ -489,6 +489,18 @@ function whmcs_dns_hostname_in_zone(string $hostname, string $zone): bool
     return $hostname === $zone || str_ends_with($hostname, '.' . $zone);
 }
 
+function whmcs_dns_provider_record_value(string $provider, string $type, string $value): string
+{
+    if ($type !== 'TXT' || $provider === 'Bunny') {
+        return $value;
+    }
+
+    $value = trim($value);
+    return $value !== '' && $value[0] === '"' && str_ends_with($value, '"')
+        ? $value
+        : '"' . str_replace('"', '\"', $value) . '"';
+}
+
 /**
  * @param array<int, array{client_id: int, domain: string, status: string}> $sources
  * @param array<int, array{client_id: int, domain: string}> $zones
@@ -778,10 +790,11 @@ function whmcs_dns_sync_cpanel_record(array $request): array
         throw new UnexpectedValueException('The target RRset contains multiple records.', 409);
     }
 
-    $value = $request['value'];
-    if ($request['type'] === 'TXT') {
-        $value = '"' . str_replace('"', '\\"', trim($value, '"')) . '"';
-    }
+    $value = whmcs_dns_provider_record_value(
+        (string) ($config['provider'] ?? ''),
+        $request['type'],
+        $request['value']
+    );
     $record = $records->first();
     if ($record && (string) $record->value === $value) {
         return ['status' => 'ok', 'action' => 'unchanged', 'zone' => $zoneName];
@@ -1781,12 +1794,7 @@ function whmcs_dns_clientarea(array $vars): array
                             $port = whmcs_dns_srv_number($_POST['record_port'] ?? null, 'port');
                         }
 
-                        if ($recordType === 'TXT') {
-                            $v = trim($recordValue);
-                            if ($v === '' || $v[0] !== '"' || substr($v, -1) !== '"') {
-                                $recordValue = '"' . str_replace('"', '\"', $v) . '"';
-                            }
-                        }
+                        $recordValue = whmcs_dns_provider_record_value($provider, $recordType, $recordValue);
 
                         if (in_array($provider, ['PowerDNS'], true) && $recordType === 'CNAME') {
                             $recordValue = rtrim(trim($recordValue), '.') . '.';
@@ -1861,12 +1869,7 @@ function whmcs_dns_clientarea(array $vars): array
                             $port = whmcs_dns_srv_number($_POST['record_port'] ?? null, 'port');
                         }
 
-                        if ($recordType === 'TXT') {
-                            $v = trim($recordValue);
-                            if ($v === '' || $v[0] !== '"' || substr($v, -1) !== '"') {
-                                $recordValue = '"' . str_replace('"', '\"', $v) . '"';
-                            }
-                        }
+                        $recordValue = whmcs_dns_provider_record_value($provider, $recordType, $recordValue);
 
                         if (in_array($provider, ['PowerDNS'], true) && $recordType === 'CNAME') {
                             $recordValue = rtrim(trim($recordValue), '.') . '.';

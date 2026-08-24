@@ -212,6 +212,10 @@ if (!whmcs_dns_hostname_in_zone('www.example.com', 'example.com')
     || whmcs_dns_hostname_in_zone('notexample.com', 'example.com')) {
     throw new RuntimeException('cPanel zone boundary check failed.');
 }
+if (whmcs_dns_provider_record_value('Bunny', 'TXT', 'v=spf1 -all') !== 'v=spf1 -all'
+    || whmcs_dns_provider_record_value('PowerDNS', 'TXT', 'v=spf1 -all') !== '"v=spf1 -all"') {
+    throw new RuntimeException('Provider TXT value formatting failed.');
+}
 
 $relaxedContext = whmcs_dns_cpanel_relaxed_context([
     ['client_id' => 10, 'domain' => 'example.com', 'status' => 'Active'],
