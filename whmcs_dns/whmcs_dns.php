@@ -22,6 +22,7 @@ define('WHMCSDNS_TABLE_RECORDS', 'records');
 define('WHMCSDNS_TABLE_RATE_LIMITS', 'whmcs_dns_rate_limits');
 define('WHMCSDNS_MUTATION_LIMIT', 30);
 define('WHMCSDNS_MUTATION_WINDOW', 60);
+define('WHMCSDNS_INTEGRATION_API_VERSION', 1);
 
 $autoload = __DIR__ . '/vendor/autoload.php';
 if (file_exists($autoload)) {
@@ -41,7 +42,7 @@ function whmcs_dns_config(): array
         'description' => 'DNS management addon enabling zone and record control via external providers',
         'author'      => 'Namingo',
         'language'    => 'english',
-        'version'     => '2.4.3',
+        'version'     => '2.5.0',
         'fields'      => [
             'provider' => [
                 'FriendlyName' => 'Provider',
@@ -1049,6 +1050,372 @@ function whmcs_dns_enforce_mutation_limit(int $clientId): void
 
         $query->increment('attempts');
     });
+}
+
+/**
+ * Normalize a record crossing the local addon integration boundary.
+ *
+ * @param array<string, mixed> $record
+ * @return array{name: string, type: string, value: string, ttl: int, priority: int|null, weight: int|null, port: int|null}
+ */
+function whmcs_dns_integration_record(array $record, string $domainName): array
+{
+    $domainName = whmcs_dns_normalize_hostname($domainName);
+    $name = whmcs_dns_normalize_hostname(is_string($record['name'] ?? null) ? $record['name'] : '');
+    if ($name === '@' || $name === $domainName) {
+        $name = '';
+    } elseif (str_ends_with($name, '.' . $domainName)) {
+        $name = substr($name, 0, -strlen('.' . $domainName));
+    }
+
+    $fqdn = $name === '' ? $domainName : $name . '.' . $domainName;
+    if ($domainName === '' || strlen($fqdn) > 253 || preg_match(
+        '/^(?=.{1,253}$)(?:[a-z0-9_](?:[a-z0-9_-]{0,61}[a-z0-9_])?\.)+[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/D',
+        $fqdn
+    ) !== 1) {
+        throw new InvalidArgumentException('A valid DNS record name is required.');
+    }
+
+    $type = strtoupper(trim(is_string($record['type'] ?? null) ? $record['type'] : ''));
+    if (!in_array($type, ['A', 'AAAA', 'CAA', 'CNAME', 'HTTPS', 'MX', 'NS', 'RDR', 'SRV', 'SVCB', 'TLSA', 'TXT'], true)) {
+        throw new InvalidArgumentException('Unsupported DNS record type.');
+    }
+
+    $value = trim(is_string($record['value'] ?? null) ? $record['value'] : '');
+    if ($type === 'TXT' && strlen($value) >= 2 && $value[0] === '"' && str_ends_with($value, '"')) {
+        $value = substr($value, 1, -1);
+    }
+    if ($value === '' || strlen($value) > 4096) {
+        throw new InvalidArgumentException('A DNS record value between 1 and 4096 bytes is required.');
+    }
+    if (in_array($type, ['CNAME', 'MX', 'NS'], true)) {
+        $value = strtolower(rtrim($value, '.'));
+        if (!str_contains($value, '.')
+            || filter_var($value, FILTER_VALIDATE_DOMAIN, FILTER_FLAG_HOSTNAME) === false) {
+            throw new InvalidArgumentException("{$type} records require a valid hostname value.");
+        }
+    } elseif ($type === 'A' && filter_var($value, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4) === false) {
+        throw new InvalidArgumentException('A records require a valid IPv4 value.');
+    } elseif ($type === 'AAAA' && filter_var($value, FILTER_VALIDATE_IP, FILTER_FLAG_IPV6) === false) {
+        throw new InvalidArgumentException('AAAA records require a valid IPv6 value.');
+    }
+
+    $ttl = filter_var($record['ttl'] ?? null, FILTER_VALIDATE_INT, [
+        'options' => ['min_range' => 1, 'max_range' => 2147483647],
+    ]);
+    if ($ttl === false) {
+        throw new InvalidArgumentException('DNS record TTL must be a positive integer.');
+    }
+
+    $priority = $weight = $port = null;
+    if (in_array($type, ['MX', 'SRV'], true)) {
+        $priority = filter_var($record['priority'] ?? null, FILTER_VALIDATE_INT, [
+            'options' => ['min_range' => 0, 'max_range' => 65535],
+        ]);
+        if ($priority === false) {
+            throw new InvalidArgumentException('DNS record priority must be between 0 and 65535.');
+        }
+    }
+    if ($type === 'SRV') {
+        $weight = whmcs_dns_srv_number($record['weight'] ?? null, 'weight');
+        $port = whmcs_dns_srv_number($record['port'] ?? null, 'port');
+    }
+    return [
+        'name' => $name,
+        'type' => $type,
+        'value' => $value,
+        'ttl' => (int) $ttl,
+        'priority' => $priority,
+        'weight' => $weight,
+        'port' => $port,
+    ];
+}
+
+/** @param array<string, mixed> $record */
+function whmcs_dns_integration_record_key(array $record): string
+{
+    return json_encode(array_values($record), JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR);
+}
+
+/**
+ * @param array<int, mixed> $current
+ * @param array<int, mixed> $delete
+ * @param array<int, mixed> $upsert
+ * @return array{delete_indexes: array<int, int>, upsert: array<int, array<string, mixed>>}
+ */
+function whmcs_dns_integration_plan(array $current, array $delete, array $upsert, string $domainName): array
+{
+    foreach (array_merge($current, $delete, $upsert) as $record) {
+        if (!is_array($record)) {
+            throw new InvalidArgumentException('Every DNS record must be an object-like array.');
+        }
+    }
+    $current = array_map(
+        static fn (array $record): array => whmcs_dns_integration_record($record, $domainName),
+        $current
+    );
+    $delete = array_map(
+        static fn (array $record): array => whmcs_dns_integration_record($record, $domainName),
+        $delete
+    );
+    $upsert = array_map(
+        static fn (array $record): array => whmcs_dns_integration_record($record, $domainName),
+        $upsert
+    );
+
+    $deleteKeys = array_fill_keys(array_map('whmcs_dns_integration_record_key', $delete), true);
+    $deleteIndexes = [];
+    $remaining = [];
+    foreach ($current as $index => $record) {
+        $key = whmcs_dns_integration_record_key($record);
+        if (isset($deleteKeys[$key])) {
+            $deleteIndexes[] = $index;
+        } else {
+            $remaining[$key] = true;
+        }
+    }
+
+    $create = [];
+    foreach ($upsert as $record) {
+        $key = whmcs_dns_integration_record_key($record);
+        if (!isset($remaining[$key])) {
+            $create[$key] = $record;
+            $remaining[$key] = true;
+        }
+    }
+
+    $postChange = [];
+    foreach ($current as $index => $record) {
+        if (!in_array($index, $deleteIndexes, true)) {
+            $postChange[] = $record;
+        }
+    }
+    array_push($postChange, ...array_values($create));
+    $typesByName = [];
+    foreach ($postChange as $record) {
+        $type = (string) $record['type'];
+        $typesByName[$record['name']][$type] = ($typesByName[$record['name']][$type] ?? 0) + 1;
+    }
+    foreach ($typesByName as $types) {
+        if (($types['CNAME'] ?? 0) > 1 || (isset($types['CNAME']) && count($types) > 1)) {
+            throw new UnexpectedValueException('A CNAME cannot coexist with another record at the same name.', 409);
+        }
+    }
+
+    return ['delete_indexes' => $deleteIndexes, 'upsert' => array_values($create)];
+}
+
+/** @param array<int, array<string, mixed>> $records */
+function whmcs_dns_integration_replacement_note(string $operation, string $domainName, array $records): string
+{
+    $lines = [
+        "DNS integration {$operation} for {$domainName} at " . gmdate('c'),
+        'Deleted/replaced records:',
+    ];
+    foreach ($records as $record) {
+        $lines[] = sprintf(
+            '%s %s %s TTL %d%s',
+            (string) $record['type'],
+            $record['name'] === '' ? '@' : (string) $record['name'],
+            (string) $record['value'],
+            (int) $record['ttl'],
+            $record['priority'] === null ? '' : ' priority ' . (int) $record['priority']
+        );
+    }
+    $note = implode("\n", $lines);
+    if (strlen($note) > 60000) {
+        throw new RuntimeException('The DNS replacement list is too large for a WHMCS client note.');
+    }
+    return $note;
+}
+
+/** @param array<int, array<string, mixed>> $records */
+function whmcs_dns_integration_save_replacement_note(
+    int $clientId,
+    string $operation,
+    string $domainName,
+    array $records
+): void {
+    $result = localAPI('AddClientNote', [
+        'userid' => $clientId,
+        'notes' => whmcs_dns_integration_replacement_note($operation, $domainName, $records),
+        'sticky' => false,
+    ]);
+    if (($result['result'] ?? null) !== 'success') {
+        throw new RuntimeException('Could not save replaced DNS records to the client notes.');
+    }
+}
+
+/** @return array{zone: object, domain: string, provider: string, config: array<string, mixed>} */
+function whmcs_dns_integration_context(int $clientId, string $domainName): array
+{
+    $domainName = whmcs_dns_normalize_hostname($domainName);
+    if ($clientId <= 0 || filter_var($domainName, FILTER_VALIDATE_DOMAIN, FILTER_FLAG_HOSTNAME) === false) {
+        throw new InvalidArgumentException('A valid client and domain are required.');
+    }
+    $zone = Capsule::table(WHMCSDNS_TABLE_ZONES)->where('domain_name', $domainName)->first();
+    if (!$zone) {
+        throw new UnexpectedValueException('DNS is not enabled for this domain.', 404);
+    }
+    if ((int) $zone->client_id !== $clientId) {
+        throw new UnexpectedValueException('The DNS zone belongs to another WHMCS client.', 403);
+    }
+
+    $zoneConfig = json_decode((string) $zone->config, true);
+    $provider = is_array($zoneConfig) ? (string) ($zoneConfig['provider'] ?? '') : '';
+    $config = whmcs_dns_provider_record_config($domainName);
+    if ($provider === '' || $provider !== ($config['provider'] ?? null)) {
+        throw new RuntimeException('The DNS zone provider does not match the configured provider.');
+    }
+    return ['zone' => $zone, 'domain' => $domainName, 'provider' => $provider, 'config' => $config];
+}
+
+/** @return array{enabled: bool, domain: string, client_id: int, provider: string|null} */
+function whmcs_dns_integration_status(int $clientId, string $domainName): array
+{
+    $domainName = whmcs_dns_normalize_hostname($domainName);
+    if ($clientId <= 0 || filter_var($domainName, FILTER_VALIDATE_DOMAIN, FILTER_FLAG_HOSTNAME) === false) {
+        throw new InvalidArgumentException('A valid client and domain are required.');
+    }
+    $zone = Capsule::table(WHMCSDNS_TABLE_ZONES)->where('domain_name', $domainName)->first();
+    if (!$zone) {
+        return ['enabled' => false, 'domain' => $domainName, 'client_id' => $clientId, 'provider' => null];
+    }
+    if ((int) $zone->client_id !== $clientId) {
+        throw new UnexpectedValueException('The DNS zone belongs to another WHMCS client.', 403);
+    }
+    $config = json_decode((string) $zone->config, true);
+    return [
+        'enabled' => true,
+        'domain' => $domainName,
+        'client_id' => $clientId,
+        'provider' => is_array($config) && is_string($config['provider'] ?? null) ? $config['provider'] : null,
+    ];
+}
+
+/** @return array<int, array{name: string, type: string, value: string, ttl: int, priority: int|null, weight: int|null, port: int|null}> */
+function whmcs_dns_integration_list_records(int $clientId, string $domainName): array
+{
+    $context = whmcs_dns_integration_context($clientId, $domainName);
+    if ($context['provider'] === 'Bunny') {
+        whmcs_dns_refresh_bunny_zone($context['domain'], (string) $context['config']['apikey']);
+        $context = whmcs_dns_integration_context($clientId, $context['domain']);
+    }
+
+    $rows = Capsule::table(WHMCSDNS_TABLE_RECORDS)
+        ->where('domain_id', $context['zone']->id)
+        ->get();
+    $records = [];
+    foreach ($rows as $row) {
+        $type = strtoupper((string) $row->type);
+        $records[] = whmcs_dns_integration_record([
+            'name' => (string) $row->host,
+            'type' => $type,
+            'value' => (string) $row->value,
+            'ttl' => $row->ttl ?? 3600,
+            'priority' => $row->priority ?? ($type === 'MX' ? 0 : null),
+            'weight' => $row->weight,
+            'port' => $row->port,
+        ], $context['domain']);
+    }
+    return $records;
+}
+
+/**
+ * @param array<int, mixed> $delete
+ * @param array<int, mixed> $upsert
+ * @return array{deleted_count: int, created_count: int}
+ */
+function whmcs_dns_integration_apply_records(
+    int $clientId,
+    string $domainName,
+    array $delete,
+    array $upsert,
+    string $operation
+): array {
+    $operation = trim($operation);
+    if ($operation === '' || strlen($operation) > 100 || preg_match('/^[a-z0-9 _-]+$/iD', $operation) !== 1) {
+        throw new InvalidArgumentException('A valid DNS operation label is required.');
+    }
+    foreach (array_merge($delete, $upsert) as $record) {
+        if (!is_array($record)) {
+            throw new InvalidArgumentException('Every DNS record must be an object-like array.');
+        }
+    }
+    foreach ($upsert as $record) {
+        if (!in_array(strtoupper((string) ($record['type'] ?? '')), ['MX', 'TXT', 'CNAME'], true)) {
+            throw new InvalidArgumentException('Only MX, TXT, and CNAME records may be added through the integration API.');
+        }
+    }
+    $context = whmcs_dns_integration_context($clientId, $domainName);
+    if ($upsert !== [] && !whmcs_dns_client_can_manage_domain_name($clientId, $context['domain'])) {
+        throw new UnexpectedValueException('The WHMCS client does not have an active service for this domain.', 403);
+    }
+    if ($context['provider'] === 'Bunny') {
+        whmcs_dns_refresh_bunny_zone($context['domain'], (string) $context['config']['apikey']);
+        $context = whmcs_dns_integration_context($clientId, $context['domain']);
+    }
+
+    $rows = Capsule::table(WHMCSDNS_TABLE_RECORDS)
+        ->where('domain_id', $context['zone']->id)
+        ->get()
+        ->all();
+    $current = [];
+    foreach ($rows as $row) {
+        $type = strtoupper((string) $row->type);
+        $current[] = whmcs_dns_integration_record([
+            'name' => (string) $row->host,
+            'type' => $type,
+            'value' => (string) $row->value,
+            'ttl' => $row->ttl ?? 3600,
+            'priority' => $row->priority ?? ($type === 'MX' ? 0 : null),
+            'weight' => $row->weight,
+            'port' => $row->port,
+        ], $context['domain']);
+    }
+    $plan = whmcs_dns_integration_plan($current, $delete, $upsert, $context['domain']);
+    if ($plan['delete_indexes'] === [] && $plan['upsert'] === []) {
+        return ['deleted_count' => 0, 'created_count' => 0];
+    }
+    whmcs_dns_enforce_mutation_limit($clientId);
+
+    $deleted = array_map(static fn (int $index): array => $current[$index], $plan['delete_indexes']);
+    if ($deleted !== []) {
+        whmcs_dns_integration_save_replacement_note($clientId, $operation, $context['domain'], $deleted);
+    }
+
+    $plex = new PlexService(Capsule::connection()->getPdo());
+    foreach ($plan['delete_indexes'] as $index) {
+        $record = $current[$index];
+        $plex->delRecord($context['config'] + [
+            'record_id' => (int) $rows[$index]->id,
+            'record_name' => $record['name'],
+            'record_type' => $record['type'],
+            'record_value' => whmcs_dns_provider_record_value(
+                $context['provider'],
+                (string) $record['type'],
+                (string) $record['value']
+            ),
+            'record_ttl' => $record['ttl'],
+        ]);
+    }
+    foreach ($plan['upsert'] as $record) {
+        $plex->addRecord($context['config'] + [
+            'record_name' => $record['name'],
+            'record_type' => $record['type'],
+            'record_value' => whmcs_dns_provider_record_value(
+                $context['provider'],
+                (string) $record['type'],
+                (string) $record['value']
+            ),
+            'record_ttl' => $record['ttl'],
+            'record_priority' => $record['priority'],
+            'record_weight' => null,
+            'record_port' => null,
+        ]);
+    }
+
+    return ['deleted_count' => count($plan['delete_indexes']), 'created_count' => count($plan['upsert'])];
 }
 
 /**

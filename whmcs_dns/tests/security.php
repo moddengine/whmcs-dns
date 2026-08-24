@@ -3,10 +3,13 @@
 define('WHMCS', true);
 require dirname(__DIR__) . '/whmcs_dns.php';
 
+$localApiResult = 'success';
+
 /** @param array<string, mixed> $values @return array<string, string> */
 function localAPI(string $command, array $values, ?string $adminUsername = null): array
 {
-    return ['result' => 'success'];
+    global $localApiResult;
+    return ['result' => $localApiResult];
 }
 
 class WebsiteBunnyFake extends PlexDNS\Providers\Bunny
@@ -358,6 +361,97 @@ try {
     whmcs_dns_srv_number('65536', 'port');
     throw new RuntimeException('Invalid SRV field was accepted.');
 } catch (InvalidArgumentException) {
+}
+
+if (WHMCSDNS_INTEGRATION_API_VERSION !== 1) {
+    throw new RuntimeException('Unexpected local integration API version.');
+}
+
+$mx = whmcs_dns_integration_record([
+    'name' => '@',
+    'type' => 'mx',
+    'value' => 'MX1.ForwardEmail.net.',
+    'ttl' => 3600,
+    'priority' => 0,
+], 'Example.COM.');
+if ($mx !== [
+    'name' => '',
+    'type' => 'MX',
+    'value' => 'mx1.forwardemail.net',
+    'ttl' => 3600,
+    'priority' => 0,
+    'weight' => null,
+    'port' => null,
+]) {
+    throw new RuntimeException('Integration record canonicalization failed.');
+}
+
+$integrationPlan = whmcs_dns_integration_plan([
+    $mx,
+    $mx,
+    ['name' => '', 'type' => 'TXT', 'value' => 'keep', 'ttl' => 300],
+], [$mx], [
+    ['name' => '@', 'type' => 'MX', 'value' => 'mx1.forwardemail.net', 'ttl' => 3600, 'priority' => 0],
+    ['name' => '_dmarc', 'type' => 'TXT', 'value' => 'v=DMARC1; p=none', 'ttl' => 300],
+], 'example.com');
+if ($integrationPlan['delete_indexes'] !== [0, 1]
+    || count($integrationPlan['upsert']) !== 2
+    || $integrationPlan['upsert'][1]['name'] !== '_dmarc') {
+    throw new RuntimeException('Integration exact-tuple retry plan failed.');
+}
+
+try {
+    whmcs_dns_integration_plan([
+        ['name' => 'mail', 'type' => 'A', 'value' => '8.8.8.8', 'ttl' => 300],
+    ], [], [
+        ['name' => 'mail', 'type' => 'CNAME', 'value' => 'forwardemail.net', 'ttl' => 300],
+    ], 'example.com');
+    throw new RuntimeException('Integration CNAME conflict was accepted.');
+} catch (UnexpectedValueException $e) {
+    if ($e->getCode() !== 409) {
+        throw $e;
+    }
+}
+
+foreach ([
+    ['name' => 'bad name', 'type' => 'TXT', 'value' => 'x', 'ttl' => 300],
+    ['name' => '@', 'type' => 'MX', 'value' => 'invalid', 'ttl' => 300, 'priority' => 0],
+    ['name' => '@', 'type' => 'TXT', 'value' => '', 'ttl' => 300],
+    ['name' => '@', 'type' => 'TXT', 'value' => 'x', 'ttl' => 0],
+] as $record) {
+    try {
+        whmcs_dns_integration_record($record, 'example.com');
+        throw new RuntimeException('Invalid integration record was accepted.');
+    } catch (InvalidArgumentException) {
+    }
+}
+
+$integrationNote = whmcs_dns_integration_replacement_note('enable', 'example.com', [$mx]);
+if (!str_contains($integrationNote, 'DNS integration enable for example.com')
+    || !str_contains($integrationNote, 'MX @ mx1.forwardemail.net TTL 3600 priority 0')) {
+    throw new RuntimeException('Integration replacement client note failed.');
+}
+$localApiResult = 'error';
+try {
+    whmcs_dns_integration_save_replacement_note(1, 'enable', 'example.com', [$mx]);
+    throw new RuntimeException('Integration continued after a failed customer note.');
+} catch (RuntimeException $e) {
+    if (!str_contains($e->getMessage(), 'Could not save replaced DNS records')) {
+        throw $e;
+    }
+}
+$localApiResult = 'success';
+
+foreach ([
+    ['', [], []],
+    ['enable', [], [1]],
+    ['enable', [], [['name' => '@', 'type' => 'A', 'value' => '8.8.8.8', 'ttl' => 300]]],
+] as [$operation, $delete, $upsert]) {
+    try {
+        whmcs_dns_integration_apply_records(1, 'example.com', $delete, $upsert, $operation);
+        throw new RuntimeException('Invalid integration apply request was accepted.');
+    } catch (InvalidArgumentException) {
+    }
 }
 
 $template = file_get_contents(dirname(__DIR__) . '/templates/clientarea.tpl');

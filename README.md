@@ -15,6 +15,7 @@ This fork extends the [original Namingo module](https://github.com/getnamingo/wh
 - **Improved Bunny support:** provider record IDs, SRV fields, RDR and NS records, manual record sync, optional custom nameservers, and zone export to client notes before deletion.
 - **Bunny admin reconciliation:** an alphabetical view of WHMCS items, Bunny zones, and local mappings with per-zone Enable, Repair/owner reassignment, and strongly confirmed Disable actions. Cross-customer conflicts are reported without automatic actions; bulk mutations are deliberately unavailable.
 - **Automation APIs:** authenticated endpoints for refreshing a Bunny zone and connecting a website to an apex A record plus `www` CNAME while preserving unrelated records.
+- **Local addon integration:** a versioned PHP facade lets trusted sibling addons inspect zones and reconcile records without an HTTP API; every deleted or replaced record is saved to the customer's notes first.
 - **cPanel bridge:** a durable one-way bridge imports hosting A records and DKIM from cPanel without copying its generated DNS boilerplate.
 - **Release safety:** PHPStan and runnable security checks, an optional live Bunny integration check, and reproducible release archives built for version tags.
 
@@ -122,6 +123,10 @@ Content-Type: application/json
 
 The connect endpoint creates or reuses the Bunny zone, sets the apex A record and `www` CNAME, preserves unrelated records, and records replaced website entries in the client's notes. It accepts public IPv4 addresses only.
 
+### Local addon integration
+
+Sibling addons in the same WHMCS installation may `require_once` `whmcs_dns.php`, check `WHMCSDNS_INTEGRATION_API_VERSION === 1`, then call `whmcs_dns_integration_status`, `whmcs_dns_integration_list_records`, and `whmcs_dns_integration_apply_records`. Records use canonical `name`, `type`, `value`, `ttl`, `priority`, `weight`, and `port` fields. The apply function validates the complete change set, refreshes Bunny first, writes deleted/replaced records to a customer note, and never creates or deletes a zone. Adds require an active customer domain or service; deletion-only cleanup remains available after termination while the owned zone exists.
+
 ### cPanel DNS bridge
 
 The optional `whmcs-dns-bridge` runs on a WHM/cPanel host and sends selected cPanel DNS updates to this addon. By default it imports only apex/configured-domain A records and `*._domainkey` TXT records. cPanel-generated service hosts, SPF, DMARC, DCV, MX, CNAME, SRV, NS, SOA, and other records are ignored.
@@ -159,8 +164,8 @@ From your server:
 
 ```bash
 cd /tmp
-wget https://github.com/moddengine/whmcs-dns/releases/download/v2.4.3/whmcs-dns-2.4.3.zip
-unzip whmcs-dns-2.4.3.zip
+wget https://github.com/moddengine/whmcs-dns/releases/download/v2.5.0/whmcs-dns-2.5.0.zip
+unzip whmcs-dns-2.5.0.zip
 cp -a whmcs_dns /path/to/whmcs/modules/addons/
 ```
 
