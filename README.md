@@ -72,6 +72,9 @@ After activating the addon, configure the module settings in **WHMCS → System 
 - **Apply Custom Nameservers**
   When using Bunny, apply NS1 and NS2 to newly created zones.
 
+- **Show Manage DNS Button On**
+  Show the button for Domains, All Products/Services, or Both in the client and admin areas.
+
 - **SOA Email**  
   Email address used in the SOA record (where applicable).
 
@@ -164,8 +167,8 @@ From your server:
 
 ```bash
 cd /tmp
-wget https://github.com/moddengine/whmcs-dns/releases/download/v2.5.1/whmcs-dns-2.5.1.zip
-unzip whmcs-dns-2.5.1.zip
+wget https://github.com/moddengine/whmcs-dns/releases/download/v2.5.2/whmcs-dns-2.5.2.zip
+unzip whmcs-dns-2.5.2.zip
 cp -a whmcs_dns /path/to/whmcs/modules/addons/
 ```
 

@@ -23,6 +23,10 @@ require_once __DIR__ . '/permissions.php';
 /** @return array<string, string> */
 function whmcs_dns_admin_manage_dns_field(string $itemType, int $itemId): array
 {
+    if (!whmcs_dns_manage_dns_button_enabled($itemType)) {
+        return [];
+    }
+
     $context = whmcs_dns_admin_item_context($itemType, $itemId);
     if ($context === null) {
         return [];
@@ -54,6 +58,10 @@ add_hook('AdminClientServicesTabFields', 1, function ($vars) {
 });
 
 add_hook('ClientAreaProductDetailsOutput', 1, function ($vars) {
+    if (!whmcs_dns_manage_dns_button_enabled('service')) {
+        return '';
+    }
+
     $service = $vars['service'] ?? null;
     if (empty($_SESSION['uid']) || !is_object($service)) {
         return '';
@@ -88,6 +96,10 @@ add_hook('ClientAreaProductDetailsOutput', 1, function ($vars) {
 });
 
 add_hook('ClientAreaSecondarySidebar', 1, function ($sidebar) {
+    if (!whmcs_dns_manage_dns_button_enabled('domain')) {
+        return;
+    }
+
     static $injected = false;
     if ($injected) {
         return;

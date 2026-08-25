@@ -42,7 +42,7 @@ function whmcs_dns_config(): array
         'description' => 'DNS management addon enabling zone and record control via external providers',
         'author'      => 'Namingo',
         'language'    => 'english',
-        'version'     => '2.5.1',
+        'version'     => '2.5.2',
         'fields'      => [
             'provider' => [
                 'FriendlyName' => 'Provider',
@@ -74,6 +74,18 @@ function whmcs_dns_config(): array
                 'FriendlyName' => 'Apply Custom Nameservers',
                 'Type'         => 'yesno',
                 'Description'  => 'Configure new Bunny DNS zones to use NS1 and NS2 below.',
+            ],
+
+            'manage_dns_button_location' => [
+                'FriendlyName' => 'Show Manage DNS Button On',
+                'Type'         => 'dropdown',
+                'Options'      => [
+                    'domain'  => 'Domains',
+                    'service' => 'All Products/Services',
+                    'both'    => 'Both',
+                ],
+                'Default'      => 'both',
+                'Description'  => 'Choose where the button appears in both the client and admin areas.',
             ],
 
             'soa_email' => [

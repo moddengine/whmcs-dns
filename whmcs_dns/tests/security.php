@@ -140,6 +140,17 @@ if (!whmcs_dns_permission_list_allows('domains, managedomains')
     throw new RuntimeException('Manage Domains permission policy failed.');
 }
 
+foreach ([
+    'domain' => [true, false, true],
+    'service' => [false, true, true],
+] as $itemType => [$domains, $services, $both]) {
+    if (whmcs_dns_manage_dns_button_enabled($itemType, 'domain') !== $domains
+        || whmcs_dns_manage_dns_button_enabled($itemType, 'service') !== $services
+        || whmcs_dns_manage_dns_button_enabled($itemType, 'both') !== $both) {
+        throw new RuntimeException('Manage DNS button location policy failed.');
+    }
+}
+
 $apiToken = bin2hex(random_bytes(32));
 $apiHash = password_hash($apiToken, PASSWORD_BCRYPT);
 if (!str_starts_with($apiHash, '$2y$')

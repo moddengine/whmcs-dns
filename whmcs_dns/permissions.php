@@ -6,6 +6,17 @@ if (!defined('WHMCS')) {
 
 use WHMCS\Authentication\CurrentUser;
 use WHMCS\Database\Capsule;
+use WHMCS\Module\Addon\Setting;
+
+function whmcs_dns_manage_dns_button_enabled(string $itemType, ?string $location = null): bool
+{
+    $location ??= (string) (Setting::getSettingValueForModule(
+        'whmcs_dns',
+        'manage_dns_button_location'
+    ) ?: 'both');
+
+    return $location === 'both' || $location === $itemType;
+}
 
 function whmcs_dns_normalize_hostname(string $hostname): string
 {
