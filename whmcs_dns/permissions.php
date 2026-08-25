@@ -86,6 +86,14 @@ function whmcs_dns_client_can_manage_domain_name(int $clientId, string $domainNa
     return false;
 }
 
+function whmcs_dns_zone_enabled(int $clientId, string $domainName): bool
+{
+    return $clientId > 0 && Capsule::table('zones')
+        ->where('client_id', $clientId)
+        ->where('domain_name', whmcs_dns_normalize_hostname($domainName))
+        ->exists();
+}
+
 function whmcs_dns_permission_list_allows(?string $permissions): bool
 {
     $permissions = array_map('trim', explode(',', (string) $permissions));

@@ -482,11 +482,20 @@ $hooks = file_get_contents(dirname(__DIR__) . '/hooks.php');
 if ($hooks === false
     || !str_contains($hooks, "add_hook('AdminClientDomainsTabFields'")
     || !str_contains($hooks, "add_hook('AdminClientServicesTabFields'")
+    || !str_contains($hooks, "whmcs_dns_zone_enabled(")
+    || !str_contains($hooks, "'Active' : 'Disabled'")
     || !str_contains($hooks, 'target="_blank" rel="noopener"')
     || !str_contains($module, "localAPI('CreateSsoToken'")
     || !str_contains($module, "'destination' => 'sso:custom_redirect'")
     || !str_contains($module, "check_token('WHMCS.admin.default')")) {
     throw new RuntimeException('Admin DNS manager SSO controls failed.');
+}
+
+$connectEndpoint = file_get_contents(dirname(__DIR__) . '/connect-website.php');
+if ($connectEndpoint === false
+    || str_contains($connectEndpoint, 'whmcs_dns_enable_domain(')
+    || !str_contains($connectEndpoint, "UnexpectedValueException('DNS is not enabled for this domain.', 404)")) {
+    throw new RuntimeException('Connect Website endpoint may enable a missing DNS zone.');
 }
 
 $cpanelEndpoint = file_get_contents(dirname(__DIR__) . '/cpanel-sync.php');

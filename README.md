@@ -121,7 +121,7 @@ Content-Type: application/json
 {"domain":"example.com","ipv4":"203.0.114.10"}
 ```
 
-The connect endpoint creates or reuses the Bunny zone, sets the apex A record and `www` CNAME, preserves unrelated records, and records replaced website entries in the client's notes. It accepts public IPv4 addresses only.
+The connect endpoint requires DNS to already be enabled for the exact active WHMCS domain; it returns `404` and never creates or enables a missing zone. It sets the apex A record and `www` CNAME, preserves unrelated records, and records replaced website entries in the client's notes. It accepts public IPv4 addresses only.
 
 ### Local addon integration
 
@@ -164,8 +164,8 @@ From your server:
 
 ```bash
 cd /tmp
-wget https://github.com/moddengine/whmcs-dns/releases/download/v2.5.0/whmcs-dns-2.5.0.zip
-unzip whmcs-dns-2.5.0.zip
+wget https://github.com/moddengine/whmcs-dns/releases/download/v2.5.1/whmcs-dns-2.5.1.zip
+unzip whmcs-dns-2.5.1.zip
 cp -a whmcs_dns /path/to/whmcs/modules/addons/
 ```
 

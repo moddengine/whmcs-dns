@@ -54,25 +54,20 @@ try {
     }
     $clientId = (int) $domains->first()->userid;
 
+    $zone = Capsule::table(WHMCSDNS_TABLE_ZONES)->where('domain_name', $domain)->first();
+    if (!$zone) {
+        throw new UnexpectedValueException('DNS is not enabled for this domain.', 404);
+    }
+    if ((int) $zone->client_id !== $clientId) {
+        throw new UnexpectedValueException('The local zone belongs to another WHMCS client.', 409);
+    }
+
     if (Setting::getSettingValueForModule('whmcs_dns', 'provider') !== 'Bunny') {
         throw new RuntimeException('Bunny DNS is not configured.');
     }
     $apiKey = (string) (Setting::getSettingValueForModule('whmcs_dns', 'apikey') ?? '');
     if ($apiKey === '') {
         throw new RuntimeException('Bunny DNS is not configured.');
-    }
-
-    $zone = Capsule::table(WHMCSDNS_TABLE_ZONES)->where('domain_name', $domain)->first();
-    if ($zone && (int) $zone->client_id !== $clientId) {
-        throw new UnexpectedValueException('The local zone belongs to another WHMCS client.', 409);
-    }
-
-    if (!$zone) {
-        whmcs_dns_enable_domain($clientId, [
-            'domain_name' => $domain,
-            'provider' => 'Bunny',
-            'apikey' => $apiKey,
-        ]);
     }
 
     whmcs_dns_refresh_bunny_zone($domain, $apiKey);
