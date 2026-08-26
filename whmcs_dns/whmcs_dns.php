@@ -340,7 +340,7 @@ function whmcs_dns_normalize_bunny_records(array $records): array
             'type' => $types[$typeId],
             'host' => (string) ($record['Name'] ?? ''),
             'value' => (string) ($record['Value'] ?? ''),
-            'ttl' => isset($record['Ttl']) ? (int) $record['Ttl'] : null,
+            'ttl' => (int) ($record['Ttl'] ?? 0) > 0 ? (int) $record['Ttl'] : 3600,
             'priority' => isset($record['Priority']) ? (int) $record['Priority'] : null,
             'weight' => isset($record['Weight']) ? (int) $record['Weight'] : null,
             'port' => isset($record['Port']) ? (int) $record['Port'] : null,

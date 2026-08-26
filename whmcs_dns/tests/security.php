@@ -321,12 +321,17 @@ foreach (['11', '12', '13'] as $preservedId) {
     }
 }
 
-$records = whmcs_dns_normalize_bunny_records([[
-    'Id' => 42, 'Type' => 8, 'Name' => '_sip._tcp', 'Value' => 'sip.example.com',
-    'Ttl' => 300, 'Priority' => 10, 'Weight' => 20, 'Port' => 5060,
-]]);
+$records = whmcs_dns_normalize_bunny_records([
+    [
+        'Id' => 42, 'Type' => 8, 'Name' => '_sip._tcp', 'Value' => 'sip.example.com',
+        'Ttl' => 300, 'Priority' => 10, 'Weight' => 20, 'Port' => 5060,
+    ],
+    ['Id' => 43, 'Type' => 3, 'Name' => '', 'Value' => 'example', 'Ttl' => 0],
+    ['Id' => 44, 'Type' => 3, 'Name' => '', 'Value' => 'example'],
+]);
 if (($records[0]['type'] ?? null) !== 'SRV' || ($records[0]['recordId'] ?? null) !== '42'
-    || ($records[0]['port'] ?? null) !== 5060) {
+    || ($records[0]['port'] ?? null) !== 5060 || ($records[1]['ttl'] ?? null) !== 3600
+    || ($records[2]['ttl'] ?? null) !== 3600) {
     throw new RuntimeException('Bunny record normalization failed.');
 }
 
