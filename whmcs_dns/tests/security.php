@@ -151,15 +151,73 @@ foreach ([
     }
 }
 
-$apiToken = bin2hex(random_bytes(32));
-$apiHash = password_hash($apiToken, PASSWORD_BCRYPT);
-if (!str_starts_with($apiHash, '$2y$')
-    || !whmcs_dns_api_token_valid('Bearer ' . $apiToken, $apiHash)
-    || !whmcs_dns_api_token_valid('', $apiHash, $apiToken)
-    || whmcs_dns_api_token_valid('Bearer wrong', $apiHash)
-    || whmcs_dns_api_token_valid('', $apiHash, 'wrong')
-    || whmcs_dns_api_token_valid('Basic ' . $apiToken, $apiHash)) {
+$manageToken = whmcs_dns_admin_manage_token('service', 42);
+if (strlen($manageToken) !== 64
+    || !ctype_xdigit($manageToken)
+    || !whmcs_dns_admin_manage_token_valid($manageToken, 'service', 42)
+    || whmcs_dns_admin_manage_token_valid($manageToken, 'service', 42)) {
+    throw new RuntimeException('Manage DNS one-use token validation failed.');
+}
+$manageToken = whmcs_dns_admin_manage_token('service', 42);
+if (whmcs_dns_admin_manage_token_valid($manageToken, 'domain', 42)
+    || whmcs_dns_admin_manage_token_valid($manageToken, 'service', 42)) {
+    throw new RuntimeException('Manage DNS token binding failed.');
+}
+
+$generatedKey = whmcs_dns_generate_api_key();
+if (preg_match('/^(WDNS_[a-f0-9]{16})_([a-f0-9]{64})$/D', $generatedKey['key'], $keyParts) !== 1
+    || $keyParts[1] !== $generatedKey['key_id']
+    || !password_verify($keyParts[2], $generatedKey['key_hash'])
+    || whmcs_dns_presented_api_key('Bearer ' . $generatedKey['key'], '') !== $generatedKey['key']
+    || whmcs_dns_presented_api_key('', $generatedKey['key']) !== $generatedKey['key']
+    || whmcs_dns_presented_api_key('Bearer ' . $generatedKey['key'], $generatedKey['key']) !== $generatedKey['key']
+    || whmcs_dns_presented_api_key('Bearer wrong', $generatedKey['key']) !== null
+    || whmcs_dns_presented_api_key('Basic ' . $generatedKey['key'], '') !== null) {
     throw new RuntimeException('Automation API authentication failed.');
+}
+if (whmcs_dns_api_scopes(['dns_write', 'dns_read', 'dns_write']) !== ['dns_read', 'dns_write']
+    || whmcs_dns_api_domains(" Example.COM.\nexample.net") !== ['example.com', 'example.net']
+    || whmcs_dns_api_domains('*') !== ['*']) {
+    throw new RuntimeException('Automation API policy normalization failed.');
+}
+foreach ([[], ['unknown']] as $scopes) {
+    try {
+        whmcs_dns_api_scopes($scopes);
+        throw new RuntimeException('Invalid API scopes accepted.');
+    } catch (InvalidArgumentException) {
+    }
+}
+foreach (['', "*\nexample.com", 'not a domain'] as $domains) {
+    try {
+        whmcs_dns_api_domains($domains);
+        throw new RuntimeException('Invalid API domains accepted.');
+    } catch (InvalidArgumentException) {
+    }
+}
+$expiry = whmcs_dns_api_expiry(date('Y-m-d\TH:i', time() + 3600));
+if ($expiry <= time() || whmcs_dns_api_expiry('') !== 0) {
+    throw new RuntimeException('Automation API expiry parsing failed.');
+}
+$policy = ['scopes' => ['dns_read'], 'domains' => ['example.com']];
+if (!whmcs_dns_api_key_allows($policy, 'dns_read', 'EXAMPLE.COM.')
+    || whmcs_dns_api_key_allows($policy, 'dns_write', 'example.com')
+    || whmcs_dns_api_key_allows($policy, 'dns_read', 'child.example.com')
+    || !whmcs_dns_api_key_allows(['scopes' => ['dns_read'], 'domains' => ['*']], 'dns_read', 'any.example')) {
+    throw new RuntimeException('Automation API scope or domain policy failed.');
+}
+
+$mx = whmcs_dns_api_record('mail.example.com', 'example.com', 'MX', 300, '10 mx.example.net.');
+$srv = whmcs_dns_api_record('_sip._tcp.example.com', 'example.com', 'SRV', 300, '1 2 443 target.example.net.');
+if (whmcs_dns_api_record_value($mx) !== '10 mx.example.net'
+    || whmcs_dns_api_record_value($srv) !== '1 2 443 target.example.net') {
+    throw new RuntimeException('DNS API record value conversion failed.');
+}
+foreach (['MX' => 'mail.example.net', 'SRV' => '1 2 target.example.net'] as $type => $value) {
+    try {
+        whmcs_dns_api_record('record.example.com', 'example.com', $type, 300, $value);
+        throw new RuntimeException("Invalid {$type} API value accepted.");
+    } catch (InvalidArgumentException) {
+    }
 }
 
 foreach (['8.8.8.8', '1.1.1.1'] as $address) {
@@ -487,6 +545,7 @@ foreach (['record_priority', 'record_weight', 'record_port'] as $field) {
 }
 
 $module = file_get_contents(dirname(__DIR__) . '/whmcs_dns.php');
+$apiKeys = file_get_contents(dirname(__DIR__) . '/api-keys.php');
 if ($module === false
     || !str_contains($module, "check_token('WHMCS.admin.default')")
     || !str_contains($module, 'Permanently delete the Bunny DNS zone')
@@ -498,13 +557,21 @@ $hooks = file_get_contents(dirname(__DIR__) . '/hooks.php');
 if ($hooks === false
     || !str_contains($hooks, "add_hook('AdminClientDomainsTabFields'")
     || !str_contains($hooks, "add_hook('AdminClientServicesTabFields'")
+    || !str_contains($hooks, "add_hook('DailyCronJob'")
     || !str_contains($hooks, "whmcs_dns_zone_enabled(")
     || !str_contains($hooks, "'Active' : 'Disabled'")
     || !str_contains($hooks, 'target="_blank" rel="noopener"')
+    || !str_contains($hooks, "'dns_token' => whmcs_dns_admin_manage_token(")
+    || str_contains($hooks, "'token' => generate_token('plain')")
     || !str_contains($module, "localAPI('CreateSsoToken'")
     || !str_contains($module, "'destination' => 'sso:custom_redirect'")
-    || !str_contains($module, "check_token('WHMCS.admin.default')")) {
-    throw new RuntimeException('Admin DNS manager SSO controls failed.');
+    || !str_contains($module, 'whmcs_dns_admin_manage_token_valid(')
+    || !str_contains($module, "check_token('WHMCS.admin.default')")
+    || $apiKeys === false
+    || !str_contains($apiKeys, "'create_api_key'")
+    || !str_contains($apiKeys, "'revoke_api_key'")
+    || !str_contains($apiKeys, '14 * 86400')) {
+    throw new RuntimeException('Admin DNS manager or API key controls failed.');
 }
 
 $connectEndpoint = file_get_contents(dirname(__DIR__) . '/connect-website.php');
@@ -516,9 +583,19 @@ if ($connectEndpoint === false
 
 $cpanelEndpoint = file_get_contents(dirname(__DIR__) . '/cpanel-sync.php');
 if ($cpanelEndpoint === false
-    || !str_contains($cpanelEndpoint, 'cpanel_sync_api_token_hash')
-    || !str_contains($module, 'rotate_cpanel_sync_api_key')) {
-    throw new RuntimeException('cPanel synchronization endpoint or key rotation is missing.');
+    || !str_contains($cpanelEndpoint, "'dns_write'")
+    || !str_contains($cpanelEndpoint, "'dns_admin'")
+    || !str_contains($cpanelEndpoint, 'whmcs_dns_request_api_key')) {
+    throw new RuntimeException('cPanel synchronization endpoint or scoped authentication is missing.');
+}
+
+$dnsEndpoint = file_get_contents(dirname(__DIR__) . '/dns.php');
+if ($dnsEndpoint === false
+    || !str_contains($dnsEndpoint, "'dns_read'")
+    || !str_contains($dnsEndpoint, "'dns_write'")
+    || !str_contains($dnsEndpoint, "'dns_admin'")
+    || file_exists(dirname(__DIR__) . '/refresh.php')) {
+    throw new RuntimeException('Scoped DNS API endpoint replacement is incomplete.');
 }
 
 echo "Security checks passed.\n";

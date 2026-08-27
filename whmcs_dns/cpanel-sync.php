@@ -2,8 +2,6 @@
 
 declare(strict_types=1);
 
-use WHMCS\Module\Addon\Setting;
-
 require dirname(__DIR__, 3) . '/init.php';
 require_once __DIR__ . '/whmcs_dns.php';
 
@@ -23,9 +21,8 @@ if (($_SERVER['REQUEST_METHOD'] ?? '') !== 'POST') {
     whmcs_dns_cpanel_response(405, ['status' => 'error', 'error' => 'Method not allowed.']);
 }
 
-$authorization = (string) ($_SERVER['HTTP_AUTHORIZATION'] ?? $_SERVER['REDIRECT_HTTP_AUTHORIZATION'] ?? '');
-$tokenHash = (string) (Setting::getSettingValueForModule('whmcs_dns', 'cpanel_sync_api_token_hash') ?? '');
-if (!whmcs_dns_api_token_valid($authorization, $tokenHash, (string) ($_SERVER['HTTP_AUTH_KEY'] ?? ''))) {
+$credential = whmcs_dns_request_api_key();
+if ($credential === null) {
     whmcs_dns_cpanel_response(401, ['status' => 'error', 'error' => 'Unauthorized.']);
 }
 
@@ -36,6 +33,15 @@ try {
         throw new InvalidArgumentException('Invalid request body.');
     }
     $request = whmcs_dns_cpanel_request($rawBody);
+    $context = whmcs_dns_cpanel_record_context(
+        $request['server_id'],
+        $request['cpanel_user'],
+        $request['domain']
+    );
+    if (!whmcs_dns_api_key_allows($credential, 'dns_write', $context['zone'])
+        || !whmcs_dns_api_key_allows($credential, 'dns_admin', $context['zone'])) {
+        whmcs_dns_cpanel_response(403, ['status' => 'error', 'error' => 'Forbidden.']);
+    }
     whmcs_dns_cpanel_response(200, whmcs_dns_sync_cpanel_record($request));
 } catch (JsonException | InvalidArgumentException $e) {
     whmcs_dns_cpanel_response(400, ['status' => 'error', 'error' => $e->getMessage()]);

@@ -55,6 +55,7 @@ namespace Illuminate\Database\Schema {
         public function unsigned(): self {}
         public function useCurrent(): self {}
         public function useCurrentOnUpdate(): self {}
+        public function default(mixed $value): self {}
     }
 }
 

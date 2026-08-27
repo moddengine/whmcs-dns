@@ -25,9 +25,8 @@ if (($_SERVER['REQUEST_METHOD'] ?? '') !== 'POST') {
     whmcs_dns_connect_website_response(405, ['status' => 'error', 'error' => 'Method not allowed.']);
 }
 
-$authorization = (string) ($_SERVER['HTTP_AUTHORIZATION'] ?? $_SERVER['REDIRECT_HTTP_AUTHORIZATION'] ?? '');
-$tokenHash = (string) (Setting::getSettingValueForModule('whmcs_dns', 'connect_website_api_token_hash') ?? '');
-if (!whmcs_dns_api_token_valid($authorization, $tokenHash, (string) ($_SERVER['HTTP_AUTH_KEY'] ?? ''))) {
+$credential = whmcs_dns_request_api_key();
+if ($credential === null) {
     whmcs_dns_connect_website_response(401, ['status' => 'error', 'error' => 'Unauthorized.']);
 }
 
@@ -41,6 +40,9 @@ try {
     $request = whmcs_dns_website_request($rawBody);
     $domain = $request['domain'];
     $ipv4 = $request['ipv4'];
+    if (!whmcs_dns_api_key_allows($credential, 'dns_write', $domain)) {
+        whmcs_dns_connect_website_response(403, ['status' => 'error', 'error' => 'Forbidden.']);
+    }
 
     $domains = Capsule::table('tbldomains')
         ->select('userid', 'domain')
