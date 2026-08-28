@@ -6,7 +6,7 @@
         }
     ],
     "require": {
-        "namingo/plexdns": "dev-fix/bunny-zone-record-ids",
+        "namingo/plexdns": "dev-feature/testing-provider",
         "utopia-php/domains": "^0.9.0"
     },
     "config": {
