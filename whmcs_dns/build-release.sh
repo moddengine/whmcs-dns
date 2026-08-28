@@ -15,13 +15,18 @@ trap 'rm -rf -- "$release_tmp"' EXIT
 install_dir="$release_tmp/whmcs_dns"
 mkdir -p -- "$install_dir"
 cp -a -- \
+    "$module_dir/api-keys.php" \
     "$module_dir/composer.json" \
     "$module_dir/composer.lock" \
     "$module_dir/connect-website.php" \
+    "$module_dir/connect-website-handler.php" \
     "$module_dir/cpanel-sync.php" \
+    "$module_dir/cpanel-sync-handler.php" \
+    "$module_dir/dns.php" \
+    "$module_dir/dns-handler.php" \
     "$module_dir/hooks.php" \
+    "$module_dir/openapi-dns-api.yaml" \
     "$module_dir/permissions.php" \
-    "$module_dir/refresh.php" \
     "$module_dir/templates" \
     "$module_dir/whmcs.json" \
     "$module_dir/whmcs_dns.php" \

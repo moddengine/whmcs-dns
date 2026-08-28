@@ -1,0 +1,336 @@
+openapi: 3.1.0
+
+info:
+  title: WHMCS DNS API
+  version: 1.0.0
+  description: >
+    Minimal API for reading, creating, replacing, and deleting DNS RRsets
+    through the WHMCS DNS addon.
+
+servers:
+  - url: https://whmcs.example
+
+security:
+  - bearerAuth: []
+  - apiKeyAuth: []
+
+paths:
+  /modules/addons/whmcs_dns/dns.php/record/{fqdn}/{type}:
+    parameters:
+      - name: fqdn
+        in: path
+        required: true
+        description: Fully-qualified DNS name.
+        schema:
+          type: string
+          examples:
+            - www.example.com
+            - portal.branch.customer.com
+
+      - name: type
+        in: path
+        required: true
+        description: DNS record type.
+        schema:
+          $ref: "#/components/schemas/RecordType"
+
+    get:
+      operationId: getDnsRecordSet
+      summary: Get DNS RRset
+      description: >
+        Returns the complete DNS RRset for the supplied FQDN and record type.
+        The authoritative zone is determined internally by the WHMCS DNS addon.
+      responses:
+        "200":
+          description: RRset found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RecordSet"
+
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+    put:
+      operationId: putDnsRecordSet
+      summary: Create or replace DNS RRset
+      description: >
+        Creates the RRset if it does not exist, or replaces the complete
+        existing RRset if it does. This operation is idempotent.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RecordSetInput"
+            examples:
+              a:
+                summary: A record
+                value:
+                  ttl: 300
+                  values:
+                    - 203.0.113.10
+
+              mx:
+                summary: MX records
+                value:
+                  ttl: 300
+                  values:
+                    - "10 mx1.example.com."
+                    - "20 mx2.example.com."
+
+              txt:
+                summary: TXT record
+                value:
+                  ttl: 300
+                  values:
+                    - "v=spf1 include:_spf.example.com ~all"
+
+      responses:
+        "200":
+          description: Existing RRset replaced.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RecordSet"
+
+        "201":
+          description: RRset created.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RecordSet"
+
+        "400":
+          $ref: "#/components/responses/BadRequest"
+
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+    delete:
+      operationId: deleteDnsRecordSet
+      summary: Delete DNS RRset
+      description: >
+        Deletes the complete RRset for the supplied FQDN and type.
+        This operation is idempotent.
+      responses:
+        "204":
+          description: >
+            RRset does not exist after this request. This response is returned
+            whether or not the RRset existed before the request.
+
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /modules/addons/whmcs_dns/dns.php/sync/{fqdn}:
+    parameters:
+      - name: fqdn
+        in: path
+        required: true
+        description: Fully-qualified DNS name.
+        schema:
+          type: string
+          examples:
+            - example.com
+            - sub.customer.com
+    post:
+      operationId: syncDnsZone
+      summary: Sync local copy of zone with external/upstream provider
+      description: >
+        Use this after modifying records in an external provider system to ensure
+        that the current WHMCS view of records is correct.
+      responses:
+        "204":
+          description: "Sync Succeeded, you can now fetch records and they will be up to date"
+
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+        "501":
+          $ref: "#/components/responses/UnsupportedProvider"
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: API token
+
+    apiKeyAuth:
+      type: apiKey
+      in: header
+      name: Auth-Key
+
+  schemas:
+    RecordType:
+      type: string
+      enum:
+        - A
+        - AAAA
+        - CAA
+        - CNAME
+        - MX
+        - NS
+        - PTR
+        - SRV
+        - TXT
+
+    RecordSetInput:
+      type: object
+      additionalProperties: false
+      required:
+        - values
+      properties:
+        ttl:
+          type: integer
+          minimum: 1
+          maximum: 2147483647
+          default: 300
+          description: TTL in seconds.
+
+        values:
+          type: array
+          minItems: 1
+          uniqueItems: true
+          description: >
+            Complete set of DNS values for this FQDN and record type.
+            PUT replaces the entire RRset with these values.
+          items:
+            type: string
+
+    RecordSet:
+      type: object
+      additionalProperties: false
+      required:
+        - fqdn
+        - type
+        - ttl
+        - values
+      properties:
+        fqdn:
+          type: string
+          description: Fully-qualified DNS name.
+          examples:
+            - www.example.com
+
+        type:
+          $ref: "#/components/schemas/RecordType"
+
+        ttl:
+          type: integer
+          description: TTL in seconds.
+          examples:
+            - 300
+
+        values:
+          type: array
+          items:
+            type: string
+          examples:
+            - ["203.0.113.10"]
+
+    Error:
+      type: object
+      additionalProperties: false
+      required:
+        - error
+        - message
+      properties:
+        error:
+          type: string
+          examples:
+            - record_not_found
+
+        message:
+          type: string
+          examples:
+            - DNS record set was not found.
+
+  responses:
+    BadRequest:
+      description: Invalid request.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example:
+            error: invalid_record
+            message: Invalid DNS record value.
+
+    Unauthorized:
+      description: Authentication required or API token invalid.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example:
+            error: unauthorized
+            message: Invalid or missing API token.
+
+    Forbidden:
+      description: >
+        The API credential is not permitted to manage this FQDN, or the
+        corresponding DNS zone is not managed by the WHMCS DNS addon.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example:
+            error: forbidden
+            message: This DNS name cannot be managed by this API credential.
+
+    NotFound:
+      description: DNS RRset was not found.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example:
+            error: record_not_found
+            message: DNS record set was not found.
+
+    InternalError:
+      description: DNS provider or internal error.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example:
+            error: provider_error
+            message: Unable to update DNS provider.
+
+    UnsupportedProvider:
+      description: The configured DNS provider does not support synchronization.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example:
+            error: unsupported_provider
+            message: DNS provider synchronization is not supported.

@@ -18,7 +18,11 @@ $autoload = __DIR__ . '/vendor/autoload.php';
 if (file_exists($autoload)) {
     require_once $autoload;
 }
-require_once __DIR__ . '/permissions.php';
+require_once __DIR__ . '/whmcs_dns.php';
+
+add_hook('DailyCronJob', 1, function (): void {
+    whmcs_dns_cleanup_expired_api_keys();
+});
 
 /** @return array<string, string> */
 function whmcs_dns_admin_manage_dns_field(string $itemType, int $itemId): array
@@ -39,7 +43,7 @@ function whmcs_dns_admin_manage_dns_field(string $itemType, int $itemId): array
         'dns_action' => 'manage',
         'item_type' => $itemType,
         'item_id' => $itemId,
-        'token' => generate_token('plain'),
+        'dns_token' => whmcs_dns_admin_manage_token($itemType, $itemId),
     ]);
 
     return ['DNS Manager' => '<a class="btn btn-primary btn-sm" href="'

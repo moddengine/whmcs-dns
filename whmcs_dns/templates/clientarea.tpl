@@ -20,18 +20,16 @@
 
     {if $domainAvailable}<div class="col-auto ms-auto d-flex gap-2">
         {if $zone}
-            {if $zone.config.provider == 'Bunny'}
-                <form method="post"
-                      action="index.php?m=whmcs_dns&domain={$selectedDomain|escape:'url'}"
-                      class="m-0">
-                    <input type="hidden" name="action" value="sync_records" />
-                    <input type="hidden" name="token" value="{$token|escape}" />
-                    <input type="hidden" name="domain_name" value="{$selectedDomain|escape}" />
-                    <button type="submit" class="btn btn-outline-primary">
-                        Sync Records
-                    </button>
-                </form>
-            {/if}
+            <form method="post"
+                  action="index.php?m=whmcs_dns&domain={$selectedDomain|escape:'url'}"
+                  class="m-0">
+                <input type="hidden" name="action" value="sync_records" />
+                <input type="hidden" name="token" value="{$token|escape}" />
+                <input type="hidden" name="domain_name" value="{$selectedDomain|escape}" />
+                <button type="submit" class="btn btn-outline-primary">
+                    Sync Records
+                </button>
+            </form>
             <form method="post"
                   action="index.php?m=whmcs_dns&domain={$selectedDomain|escape:'url'}"
                   onsubmit="return confirm('Disable DNS and delete the zone for this domain?');"
@@ -189,7 +187,7 @@
                                     <input type="hidden" name="token" value="{$token|escape}" />
                                     <input type="hidden" name="domain_name" value="{$zone.domain_name|escape}" />
                                     <input type="hidden" name="row_id" value="{$r.id}" />
-                                    <input type="hidden" name="old_value" value="{$r.value|escape}" />
+                                    <input type="hidden" name="old_value" value="{$r.stored_value|escape}" />
                                     <input type="hidden" name="record_type" value="{$r.type|escape}" />
                                     <input type="hidden" name="record_name" value="{$r.host|escape}" />
 

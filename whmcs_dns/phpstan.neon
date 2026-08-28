@@ -1,10 +1,15 @@
 parameters:
     level: 6
     paths:
+        - api-keys.php
         - hooks.php
         - permissions.php
-        - refresh.php
+        - dns.php
+        - dns-handler.php
+        - cpanel-sync.php
+        - cpanel-sync-handler.php
         - connect-website.php
+        - connect-website-handler.php
         - whmcs_dns.php
     scanFiles:
         - stubs/whmcs.php

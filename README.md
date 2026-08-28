@@ -12,9 +12,9 @@ This fork extends the [original Namingo module](https://github.com/getnamingo/wh
 
 - **Safer client access:** active-domain/service ownership checks, WHMCS subaccount permissions, CSRF protection, mutation rate limiting, stale-record detection, and provider-record ownership validation.
 - **Hosting product support:** active products with a hostname can manage the registrable domain from their product details page.
-- **Improved Bunny support:** provider record IDs, SRV fields, RDR and NS records, manual record sync, optional custom nameservers, and zone export to client notes before deletion.
+- **Improved Bunny support:** provider record IDs, SRV fields, RDR and NS records, optional custom nameservers, and zone export to client notes before deletion.
 - **Bunny admin reconciliation:** an alphabetical view of WHMCS items, Bunny zones, and local mappings with per-zone Enable, Repair/owner reassignment, and strongly confirmed Disable actions. Cross-customer conflicts are reported without automatic actions; bulk mutations are deliberately unavailable.
-- **Automation APIs:** authenticated endpoints for refreshing a Bunny zone and connecting a website to an apex A record plus `www` CNAME while preserving unrelated records.
+- **Automation APIs:** authenticated endpoints for refreshing supported provider state and connecting a website to an apex A record plus `www` CNAME while preserving unrelated records.
 - **Local addon integration:** a versioned PHP facade lets trusted sibling addons inspect zones and reconcile records without an HTTP API; every deleted or replaced record is saved to the customer's notes first.
 - **cPanel bridge:** a durable one-way bridge imports hosting A records and DKIM from cPanel without copying its generated DNS boilerplate.
 - **Release safety:** PHPStan and runnable security checks, an optional live Bunny integration check, and reproducible release archives built for version tags.
@@ -100,19 +100,24 @@ When Bunny is the configured provider, open **Addons → DNS Hosting** in the WH
 
 Rows distinguish zones that are in sync, missing from Bunny, in need of local repair, attached only to inactive WHMCS items, orphaned in Bunny, stale locally, or claimed by multiple customers. Repair changes only the local customer/zone mapping and refreshes the record cache; it does not alter Bunny records.
 
-### Bunny automation APIs
+### Automation APIs
 
-Generate or rotate the separate endpoint keys under **Addons → DNS Hosting → Automation API Keys**. Copy each generated key when it is shown; only its bcrypt hash is saved in the addon settings. Send the key in the `Auth-Key` header. Bearer tokens remain supported when the web server forwards the `Authorization` header to PHP.
+Version 3.0 replaces the old per-endpoint keys. After upgrading, create new scoped credentials under **Addons → DNS Hosting → Automation API Keys**; old refresh, connect-website, and cPanel keys no longer work. Each key is shown once and can be limited to specific managed apex domains or `*`. Expired keys stop working immediately and are deleted by the daily cron 14 days later.
 
-Refresh the local record cache from Bunny:
+Scopes are independent: `dns_read` reads RRsets, `dns_write` changes RRsets and permits the connect-website endpoint, `dns_admin` refreshes provider state, and `auth_admin` is reserved for a future credential API. The cPanel endpoint requires both `dns_write` and `dns_admin` because it can enable a missing zone.
 
-```http
-POST /modules/addons/whmcs_dns/refresh.php
-Auth-Key: <refresh-key>
-Content-Type: application/json
+Send credentials as either `Auth-Key: WDNS_...` or `Authorization: Bearer WDNS_...`. The DNS API is documented in `whmcs_dns/openapi-dns-api.yaml` and exposes:
 
-{"domain":"example.com"}
+```text
+GET    /modules/addons/whmcs_dns/dns.php/record/{fqdn}/{type}
+PUT    /modules/addons/whmcs_dns/dns.php/record/{fqdn}/{type}
+DELETE /modules/addons/whmcs_dns/dns.php/record/{fqdn}/{type}
+POST   /modules/addons/whmcs_dns/dns.php/sync/{fqdn}
 ```
+
+`PUT` replaces the complete RRset. MX values use `priority target`; SRV values use `priority weight port target`. The sync route replaces the removed `refresh.php` endpoint. Zone enable/disable and credential grant/revoke are not exposed over HTTP.
+
+Zone synchronization is delegated to the configured PlexDNS provider. Providers without synchronization support return `501 unsupported_provider` without changing cached records.
 
 Connect a website to an exact active WHMCS domain:
 
@@ -134,7 +139,7 @@ Sibling addons in the same WHMCS installation may `require_once` `whmcs_dns.php`
 
 The optional `whmcs-dns-bridge` runs on a WHM/cPanel host and sends selected cPanel DNS updates to this addon. By default it imports only apex/configured-domain A records and `*._domainkey` TXT records. cPanel-generated service hosts, SPF, DMARC, DCV, MX, CNAME, SRV, NS, SOA, and other records are ignored.
 
-1. In **Addons → DNS Hosting → Automation API Keys**, generate a **cPanel Sync API** key.
+1. In **Addons → DNS Hosting → Automation API Keys**, create a key with `dns_write` and `dns_admin` scopes for the required domains.
 2. Download the bridge archive matching the cPanel host architecture and extract it.
 3. In **WHM → Server Configuration → Tweak Settings → Software**, disable the `dnsadmin` checkbox under **Dormant services**. cPanel requires `dnsadmin` to remain active for custom DNS cluster plugins.
 4. Run `sudo ./install.sh`. The installer enables DNS clustering and creates the **WHMCS-DNS** backend with the **Write-only** role directly because current cPanel releases restrict the WHM add-backend form to bundled modules.
@@ -167,8 +172,8 @@ From your server:
 
 ```bash
 cd /tmp
-wget https://github.com/moddengine/whmcs-dns/releases/download/v2.5.2/whmcs-dns-2.5.2.zip
-unzip whmcs-dns-2.5.2.zip
+wget https://github.com/moddengine/whmcs-dns/releases/download/v3.1.0/whmcs-dns-3.1.0.zip
+unzip whmcs-dns-3.1.0.zip
 cp -a whmcs_dns /path/to/whmcs/modules/addons/
 ```
 

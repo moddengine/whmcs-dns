@@ -1,2 +1,4 @@
 /vendor/
 /dist/
+/.phpunit.cache/
+/build/coverage/
