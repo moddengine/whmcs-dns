@@ -44,7 +44,7 @@ function whmcs_dns_config(): array
         'description' => 'DNS management addon enabling zone and record control via external providers',
         'author'      => 'Namingo',
         'language'    => 'english',
-        'version'     => '3.1.1',
+        'version'     => '3.1.2',
         'fields'      => [
             'provider' => [
                 'FriendlyName' => 'Provider',
@@ -1874,12 +1874,8 @@ function whmcs_dns_output(array $vars): void
                 'options' => ['min_range' => 1],
             ]);
             $itemType = (string) ($_GET['item_type'] ?? '');
-            if ($itemId === false || !whmcs_dns_admin_manage_token_valid(
-                (string) ($_GET['dns_token'] ?? ''),
-                $itemType,
-                (int) $itemId
-            )) {
-                throw new InvalidArgumentException('Invalid or expired Manage DNS link.');
+            if ($itemId === false) {
+                throw new InvalidArgumentException('Invalid Manage DNS link.');
             }
             $context = whmcs_dns_admin_item_context($itemType, (int) $itemId);
             if ($context === null) {
