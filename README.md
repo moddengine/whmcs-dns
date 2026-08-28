@@ -12,9 +12,9 @@ This fork extends the [original Namingo module](https://github.com/getnamingo/wh
 
 - **Safer client access:** active-domain/service ownership checks, WHMCS subaccount permissions, CSRF protection, mutation rate limiting, stale-record detection, and provider-record ownership validation.
 - **Hosting product support:** active products with a hostname can manage the registrable domain from their product details page.
-- **Improved Bunny support:** provider record IDs, SRV fields, RDR and NS records, manual record sync, optional custom nameservers, and zone export to client notes before deletion.
+- **Improved Bunny support:** provider record IDs, SRV fields, RDR and NS records, optional custom nameservers, and zone export to client notes before deletion.
 - **Bunny admin reconciliation:** an alphabetical view of WHMCS items, Bunny zones, and local mappings with per-zone Enable, Repair/owner reassignment, and strongly confirmed Disable actions. Cross-customer conflicts are reported without automatic actions; bulk mutations are deliberately unavailable.
-- **Automation APIs:** authenticated endpoints for refreshing a Bunny zone and connecting a website to an apex A record plus `www` CNAME while preserving unrelated records.
+- **Automation APIs:** authenticated endpoints for refreshing supported provider state and connecting a website to an apex A record plus `www` CNAME while preserving unrelated records.
 - **Local addon integration:** a versioned PHP facade lets trusted sibling addons inspect zones and reconcile records without an HTTP API; every deleted or replaced record is saved to the customer's notes first.
 - **cPanel bridge:** a durable one-way bridge imports hosting A records and DKIM from cPanel without copying its generated DNS boilerplate.
 - **Release safety:** PHPStan and runnable security checks, an optional live Bunny integration check, and reproducible release archives built for version tags.
@@ -117,6 +117,8 @@ POST   /modules/addons/whmcs_dns/dns.php/sync/{fqdn}
 
 `PUT` replaces the complete RRset. MX values use `priority target`; SRV values use `priority weight port target`. The sync route replaces the removed `refresh.php` endpoint. Zone enable/disable and credential grant/revoke are not exposed over HTTP.
 
+Zone synchronization is delegated to the configured PlexDNS provider. Providers without synchronization support return `501 unsupported_provider` without changing cached records.
+
 Connect a website to an exact active WHMCS domain:
 
 ```http
@@ -170,8 +172,8 @@ From your server:
 
 ```bash
 cd /tmp
-wget https://github.com/moddengine/whmcs-dns/releases/download/v3.0.0/whmcs-dns-3.0.0.zip
-unzip whmcs-dns-3.0.0.zip
+wget https://github.com/moddengine/whmcs-dns/releases/download/v3.1.0/whmcs-dns-3.1.0.zip
+unzip whmcs-dns-3.1.0.zip
 cp -a whmcs_dns /path/to/whmcs/modules/addons/
 ```
 

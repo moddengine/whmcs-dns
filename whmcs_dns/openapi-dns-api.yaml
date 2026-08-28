@@ -172,6 +172,9 @@ paths:
 
         "500":
           $ref: "#/components/responses/InternalError"
+
+        "501":
+          $ref: "#/components/responses/UnsupportedProvider"
 components:
   securitySchemes:
     bearerAuth:
@@ -321,3 +324,13 @@ components:
           example:
             error: provider_error
             message: Unable to update DNS provider.
+
+    UnsupportedProvider:
+      description: The configured DNS provider does not support synchronization.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example:
+            error: unsupported_provider
+            message: DNS provider synchronization is not supported.

@@ -3,7 +3,7 @@
 define('WHMCS', true);
 require dirname(__DIR__) . '/whmcs_dns.php';
 
-$localApiResult = 'success';
+$GLOBALS['localApiResult'] = 'success';
 
 /** @param array<string, mixed> $values @return array<string, string> */
 function localAPI(string $command, array $values, ?string $adminUsername = null): array
@@ -379,20 +379,6 @@ foreach (['11', '12', '13'] as $preservedId) {
     }
 }
 
-$records = whmcs_dns_normalize_bunny_records([
-    [
-        'Id' => 42, 'Type' => 8, 'Name' => '_sip._tcp', 'Value' => 'sip.example.com',
-        'Ttl' => 300, 'Priority' => 10, 'Weight' => 20, 'Port' => 5060,
-    ],
-    ['Id' => 43, 'Type' => 3, 'Name' => '', 'Value' => 'example', 'Ttl' => 0],
-    ['Id' => 44, 'Type' => 3, 'Name' => '', 'Value' => 'example'],
-]);
-if (($records[0]['type'] ?? null) !== 'SRV' || ($records[0]['recordId'] ?? null) !== '42'
-    || ($records[0]['port'] ?? null) !== 5060 || ($records[1]['ttl'] ?? null) !== 3600
-    || ($records[2]['ttl'] ?? null) !== 3600) {
-    throw new RuntimeException('Bunny record normalization failed.');
-}
-
 $nameservers = whmcs_dns_bunny_nameserver_payload('NS1.Example.com.', 'ns2.example.com');
 if ($nameservers['Nameserver1'] !== 'ns1.example.com'
     || $nameservers['Nameserver2'] !== 'ns2.example.com'
@@ -422,8 +408,8 @@ try {
 }
 
 if (!whmcs_dns_bunny_empty_export_is_expected([])
-    || !whmcs_dns_bunny_empty_export_is_expected([['type' => 'RDR']])
-    || whmcs_dns_bunny_empty_export_is_expected([['type' => 'A']])) {
+    || !whmcs_dns_bunny_empty_export_is_expected([['Type' => 5]])
+    || whmcs_dns_bunny_empty_export_is_expected([['Type' => 0]])) {
     throw new RuntimeException('Bunny empty zone export record policy failed.');
 }
 
@@ -458,6 +444,27 @@ if ($mx !== [
     'port' => null,
 ]) {
     throw new RuntimeException('Integration record canonicalization failed.');
+}
+
+$compactSrv = whmcs_dns_integration_record([
+    'name' => '_sip._tcp',
+    'type' => 'SRV',
+    'value' => '20 5060 SIP.Example.com.',
+    'ttl' => 300,
+    'priority' => 10,
+], 'example.com');
+$legacySrv = whmcs_dns_integration_record([
+    'name' => '_sip._tcp',
+    'type' => 'SRV',
+    'value' => 'SIP.Example.com.',
+    'ttl' => 300,
+    'priority' => 10,
+    'weight' => 20,
+    'port' => 5060,
+], 'example.com');
+if ($compactSrv !== $legacySrv || $compactSrv['value'] !== 'sip.example.com'
+    || $compactSrv['weight'] !== 20 || $compactSrv['port'] !== 5060) {
+    throw new RuntimeException('Compact PlexDNS SRV storage was not split correctly.');
 }
 
 $integrationPlan = whmcs_dns_integration_plan([
@@ -505,7 +512,7 @@ if (!str_contains($integrationNote, 'DNS integration enable for example.com')
     || !str_contains($integrationNote, 'MX @ mx1.forwardemail.net TTL 3600 priority 0')) {
     throw new RuntimeException('Integration replacement client note failed.');
 }
-$localApiResult = 'error';
+$GLOBALS['localApiResult'] = 'error';
 try {
     whmcs_dns_integration_save_replacement_note(1, 'enable', 'example.com', [$mx]);
     throw new RuntimeException('Integration continued after a failed customer note.');
@@ -514,7 +521,7 @@ try {
         throw $e;
     }
 }
-$localApiResult = 'success';
+$GLOBALS['localApiResult'] = 'success';
 
 foreach ([
     ['', [], []],
@@ -535,7 +542,7 @@ if ($template === false || substr_count($template, '<form') !== substr_count($te
 
 if (!str_contains($template, 'name="action" value="sync_records"')
     || !str_contains($template, 'Sync Records')) {
-    throw new RuntimeException('Bunny record sync control is missing.');
+    throw new RuntimeException('Provider record sync control is missing.');
 }
 
 foreach (['record_priority', 'record_weight', 'record_port'] as $field) {
@@ -575,25 +582,34 @@ if ($hooks === false
 }
 
 $connectEndpoint = file_get_contents(dirname(__DIR__) . '/connect-website.php');
+$connectHandler = file_get_contents(dirname(__DIR__) . '/connect-website-handler.php');
 if ($connectEndpoint === false
-    || str_contains($connectEndpoint, 'whmcs_dns_enable_domain(')
-    || !str_contains($connectEndpoint, "UnexpectedValueException('DNS is not enabled for this domain.', 404)")) {
+    || !str_contains($connectEndpoint, 'ServerRequest::fromGlobals()')
+    || $connectHandler === false
+    || str_contains($connectHandler, 'whmcs_dns_enable_domain(')
+    || !str_contains($connectHandler, "UnexpectedValueException('DNS is not enabled for this domain.', 404)")) {
     throw new RuntimeException('Connect Website endpoint may enable a missing DNS zone.');
 }
 
 $cpanelEndpoint = file_get_contents(dirname(__DIR__) . '/cpanel-sync.php');
+$cpanelHandler = file_get_contents(dirname(__DIR__) . '/cpanel-sync-handler.php');
 if ($cpanelEndpoint === false
-    || !str_contains($cpanelEndpoint, "'dns_write'")
-    || !str_contains($cpanelEndpoint, "'dns_admin'")
-    || !str_contains($cpanelEndpoint, 'whmcs_dns_request_api_key')) {
+    || !str_contains($cpanelEndpoint, 'ServerRequest::fromGlobals()')
+    || $cpanelHandler === false
+    || !str_contains($cpanelHandler, "'dns_write'")
+    || !str_contains($cpanelHandler, "'dns_admin'")
+    || !str_contains($cpanelHandler, 'whmcs_dns_authenticate_api_key')) {
     throw new RuntimeException('cPanel synchronization endpoint or scoped authentication is missing.');
 }
 
 $dnsEndpoint = file_get_contents(dirname(__DIR__) . '/dns.php');
+$dnsHandler = file_get_contents(dirname(__DIR__) . '/dns-handler.php');
 if ($dnsEndpoint === false
-    || !str_contains($dnsEndpoint, "'dns_read'")
-    || !str_contains($dnsEndpoint, "'dns_write'")
-    || !str_contains($dnsEndpoint, "'dns_admin'")
+    || !str_contains($dnsEndpoint, 'ServerRequest::fromGlobals()')
+    || $dnsHandler === false
+    || !str_contains($dnsHandler, "'dns_read'")
+    || !str_contains($dnsHandler, "'dns_write'")
+    || !str_contains($dnsHandler, "'dns_admin'")
     || file_exists(dirname(__DIR__) . '/refresh.php')) {
     throw new RuntimeException('Scoped DNS API endpoint replacement is incomplete.');
 }

@@ -15,6 +15,7 @@ if (!defined("WHMCS")) {
 use WHMCS\Database\Capsule;
 use WHMCS\Module\Addon\Setting;
 use PlexDNS\Service as PlexService;
+use PlexDNS\UnsupportedProviderException;
 use PlexDNS\Providers\Bunny as BunnyProvider;
 
 define('WHMCSDNS_TABLE_ZONES', 'zones');
@@ -74,7 +75,7 @@ function whmcs_dns_config(): array
         'description' => 'DNS management addon enabling zone and record control via external providers',
         'author'      => 'Namingo',
         'language'    => 'english',
-        'version'     => '3.0.0',
+        'version'     => '3.1.0',
         'fields'      => [
             'provider' => [
                 'FriendlyName' => 'Provider',
@@ -290,11 +291,11 @@ function whmcs_dns_bunny_zone_note(string $domainName, string $zoneFile): string
     return $note;
 }
 
-/** @param array<int, array<string, int|string|null>> $records */
+/** @param array<int, mixed> $records */
 function whmcs_dns_bunny_empty_export_is_expected(array $records): bool
 {
     foreach ($records as $record) {
-        if (($record['type'] ?? null) !== 'RDR') {
+        if (!is_array($record) || (int) ($record['Type'] ?? -1) !== 5) {
             return false;
         }
     }
@@ -315,7 +316,7 @@ function whmcs_dns_save_bunny_zone_note(
     ]);
     $zoneFile = (string) $provider->exportDomainAsZonefile($domainName);
     if (trim($zoneFile) === '' && whmcs_dns_bunny_empty_export_is_expected(
-        whmcs_dns_normalize_bunny_records($provider->retrieveAllRRsets($domainName))
+        $provider->retrieveAllRRsets($domainName)
     )) {
         return;
     }
@@ -329,88 +330,6 @@ function whmcs_dns_save_bunny_zone_note(
     if (($result['result'] ?? null) !== 'success') {
         throw new RuntimeException('Could not save the DNS zone export to the client notes; the zone was not deleted.');
     }
-}
-
-/**
- * @param array<int, mixed> $records
- * @return array<int, array<string, int|string|null>>
- */
-function whmcs_dns_normalize_bunny_records(array $records): array
-{
-    $types = [
-        0 => 'A', 1 => 'AAAA', 2 => 'CNAME', 3 => 'TXT', 4 => 'MX', 5 => 'RDR',
-        8 => 'SRV', 9 => 'CAA', 12 => 'NS', 13 => 'SVCB', 14 => 'HTTPS', 15 => 'TLSA',
-    ];
-    $rows = [];
-
-    foreach ($records as $record) {
-        if (!is_array($record) || !isset($record['Id'], $record['Type']) || !is_numeric($record['Id'])) {
-            throw new RuntimeException('Bunny returned an invalid DNS record.');
-        }
-
-        $typeId = (int) $record['Type'];
-        if (!isset($types[$typeId])) {
-            throw new RuntimeException("Bunny returned unsupported record type {$typeId}.");
-        }
-
-        $rows[] = [
-            'recordId' => (string) $record['Id'],
-            'type' => $types[$typeId],
-            'host' => (string) ($record['Name'] ?? ''),
-            'value' => (string) ($record['Value'] ?? ''),
-            'ttl' => (int) ($record['Ttl'] ?? 0) > 0 ? (int) $record['Ttl'] : 3600,
-            'priority' => isset($record['Priority']) ? (int) $record['Priority'] : null,
-            'weight' => isset($record['Weight']) ? (int) $record['Weight'] : null,
-            'port' => isset($record['Port']) ? (int) $record['Port'] : null,
-        ];
-    }
-
-    return $rows;
-}
-
-function whmcs_dns_refresh_bunny_zone(string $domainName, string $apiKey): int
-{
-    $domainName = strtolower(rtrim(trim($domainName), '.'));
-    if ($domainName === '' || strlen($domainName) > 253) {
-        throw new InvalidArgumentException('A valid domain is required.');
-    }
-
-    $zone = Capsule::table(WHMCSDNS_TABLE_ZONES)->where('domain_name', $domainName)->first();
-    if (!$zone) {
-        throw new InvalidArgumentException('Zone not found.');
-    }
-
-    $config = json_decode((string) $zone->config, true);
-    if (!is_array($config) || ($config['provider'] ?? null) !== 'Bunny' || empty($zone->zoneId)) {
-        throw new InvalidArgumentException('Zone is not a Bunny DNS zone.');
-    }
-
-    $provider = new BunnyProvider([
-        'apikey' => $apiKey,
-        'domain_name' => $domainName,
-        'zone_id' => (string) $zone->zoneId,
-    ]);
-    $rows = whmcs_dns_normalize_bunny_records($provider->retrieveAllRRsets($domainName));
-    $now = date('Y-m-d H:i:s');
-
-    Capsule::connection()->transaction(function () use ($zone, $rows, $now): void {
-        $lockedZone = Capsule::table(WHMCSDNS_TABLE_ZONES)->where('id', $zone->id)->lockForUpdate()->first();
-        if (!$lockedZone) {
-            throw new RuntimeException('Zone was removed while it was being refreshed.');
-        }
-
-        Capsule::table(WHMCSDNS_TABLE_RECORDS)->where('domain_id', $zone->id)->delete();
-        foreach ($rows as $row) {
-            Capsule::table(WHMCSDNS_TABLE_RECORDS)->insert($row + [
-                'domain_id' => (int) $zone->id,
-                'created_at' => $now,
-                'updated_at' => $now,
-            ]);
-        }
-        Capsule::table(WHMCSDNS_TABLE_ZONES)->where('id', $zone->id)->update(['updated_at' => $now]);
-    });
-
-    return count($rows);
 }
 
 function whmcs_dns_public_ipv4(string $address): bool
@@ -763,7 +682,7 @@ function whmcs_dns_api_put_rrset(array $context, string $fqdn, string $type, int
     $plex = new PlexService(Capsule::connection()->getPdo());
     whmcs_dns_api_delete_rrset_rows($context, $existing, $plex);
     foreach ($records as $record) {
-        $rowId = $plex->addRecord($context['config'] + [
+        $plex->addRecord($context['config'] + [
             'record_name' => $record['name'],
             'record_type' => $record['type'],
             'record_value' => whmcs_dns_provider_record_value(
@@ -776,12 +695,6 @@ function whmcs_dns_api_put_rrset(array $context, string $fqdn, string $type, int
             'record_weight' => $record['weight'],
             'record_port' => $record['port'],
         ]);
-        if ($record['type'] === 'SRV') {
-            Capsule::table(WHMCSDNS_TABLE_RECORDS)->where('id', $rowId)->update([
-                'weight' => $record['weight'],
-                'port' => $record['port'],
-            ]);
-        }
     }
     $wireValues = array_map('whmcs_dns_api_record_value', $records);
     sort($wireValues);
@@ -1011,6 +924,8 @@ function whmcs_dns_enable_domain(int $clientId, array $config): bool
         return false;
     }
 
+    $plex = new PlexService(Capsule::connection()->getPdo());
+    $created = true;
     if ($providerName === 'Bunny') {
         $remote = whmcs_dns_find_bunny_zone(
             (new BunnyProvider(['apikey' => (string) ($config['apikey'] ?? '')]))->listDomains(),
@@ -1026,18 +941,25 @@ function whmcs_dns_enable_domain(int $clientId, array $config): bool
                 'created_at' => $now,
                 'updated_at' => $now,
             ]);
-            return false;
+            $created = false;
         }
     }
 
-    (new PlexService(Capsule::connection()->getPdo()))->createDomain([
-        'client_id' => $clientId,
-        'config' => json_encode($config, JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR),
-    ]);
+    if ($created) {
+        $plex->createDomain([
+            'client_id' => $clientId,
+            'config' => json_encode($config, JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR),
+        ]);
+    }
     if (!Capsule::table(WHMCSDNS_TABLE_ZONES)->where('domain_name', $domainName)->first()) {
         throw new RuntimeException('The provider zone was created without a local zone mapping.');
     }
-    return true;
+    try {
+        $plex->sync($config);
+    } catch (UnsupportedProviderException) {
+        // A provider may support creating zones without supporting cache imports.
+    }
+    return $created;
 }
 
 /**
@@ -1068,9 +990,6 @@ function whmcs_dns_sync_cpanel_record(array $request): array
         ->first();
     if (!$zone) {
         whmcs_dns_enable_domain($context['client_id'], $config);
-        if (($config['provider'] ?? null) === 'Bunny') {
-            whmcs_dns_refresh_bunny_zone($zoneName, (string) $config['apikey']);
-        }
         $zone = Capsule::table(WHMCSDNS_TABLE_ZONES)
             ->where('domain_name', $zoneName)
             ->where('client_id', $context['client_id'])
@@ -1380,6 +1299,11 @@ function whmcs_dns_integration_record(array $record, string $domainName): array
     }
 
     $value = trim(is_string($record['value'] ?? null) ? $record['value'] : '');
+    if ($type === 'SRV' && preg_match('/^([0-9]{1,5})\s+([0-9]{1,5})\s+(\S+)$/D', $value, $matches) === 1) {
+        $record['weight'] = (int) $matches[1];
+        $record['port'] = (int) $matches[2];
+        $value = $matches[3];
+    }
     if ($type === 'TXT' && strlen($value) >= 2 && $value[0] === '"' && str_ends_with($value, '"')) {
         $value = substr($value, 1, -1);
     }
@@ -1595,10 +1519,6 @@ function whmcs_dns_integration_status(int $clientId, string $domainName): array
 function whmcs_dns_integration_list_records(int $clientId, string $domainName): array
 {
     $context = whmcs_dns_integration_context($clientId, $domainName);
-    if ($context['provider'] === 'Bunny') {
-        whmcs_dns_refresh_bunny_zone($context['domain'], (string) $context['config']['apikey']);
-        $context = whmcs_dns_integration_context($clientId, $context['domain']);
-    }
 
     $rows = Capsule::table(WHMCSDNS_TABLE_RECORDS)
         ->where('domain_id', $context['zone']->id)
@@ -1648,10 +1568,6 @@ function whmcs_dns_integration_apply_records(
     $context = whmcs_dns_integration_context($clientId, $domainName);
     if ($upsert !== [] && !whmcs_dns_client_can_manage_domain_name($clientId, $context['domain'])) {
         throw new UnexpectedValueException('The WHMCS client does not have an active service for this domain.', 403);
-    }
-    if ($context['provider'] === 'Bunny') {
-        whmcs_dns_refresh_bunny_zone($context['domain'], (string) $context['config']['apikey']);
-        $context = whmcs_dns_integration_context($clientId, $context['domain']);
     }
 
     $rows = Capsule::table(WHMCSDNS_TABLE_RECORDS)
@@ -1910,7 +1826,11 @@ function whmcs_dns_admin_repair(array $row, int $clientId, string $apiKey): int
         ]);
     }
 
-    return whmcs_dns_refresh_bunny_zone($domainName, $apiKey);
+    return (new PlexService(Capsule::connection()->getPdo()))->sync([
+        'domain_name' => $domainName,
+        'provider' => 'Bunny',
+        'apikey' => $apiKey,
+    ]);
 }
 
 /** @param array<string, mixed> $row */
@@ -1928,7 +1848,10 @@ function whmcs_dns_admin_enable(array $row, string $apiKey): int
         'apikey' => $apiKey,
     ]);
 
-    return whmcs_dns_refresh_bunny_zone($domainName, $apiKey);
+    $zone = Capsule::table(WHMCSDNS_TABLE_ZONES)->where('domain_name', $domainName)->first();
+    return $zone
+        ? Capsule::table(WHMCSDNS_TABLE_RECORDS)->where('domain_id', $zone->id)->count()
+        : 0;
 }
 
 /** @param array<string, mixed> $row */
@@ -2322,16 +2245,13 @@ function whmcs_dns_clientarea(array $vars): array
                             }
 
                             $created = whmcs_dns_enable_domain($clientId, $cfg);
-                            if ($provider === 'Bunny') {
-                                whmcs_dns_refresh_bunny_zone($domainName, $apikey);
-                            }
                             $zone = Capsule::table(WHMCSDNS_TABLE_ZONES)
                                 ->where('domain_name', $domainName)
                                 ->where('client_id', $clientId)
                                 ->first();
                             $messageText = $created
                                 ? 'DNS enabled. Zone created.'
-                                : 'DNS enabled. Existing Bunny zone synced.';
+                                : 'DNS enabled. Existing provider zone adopted.';
                         }
 
                         if ($applyCustomNameservers) {
@@ -2405,8 +2325,8 @@ function whmcs_dns_clientarea(array $vars): array
                             throw new RuntimeException('DNS is not enabled for this domain.');
                         }
 
-                        $count = whmcs_dns_refresh_bunny_zone($domainName, $apikey);
-                        $message = ['type' => 'success', 'text' => "Synced {$count} records from Bunny."];
+                        $count = $plex->sync(whmcs_dns_provider_record_config($domainName));
+                        $message = ['type' => 'success', 'text' => "Synced {$count} records from the DNS provider."];
                     }
 
                     if ($action === 'add_record') {
@@ -2474,11 +2394,7 @@ function whmcs_dns_clientarea(array $vars): array
                             }
                         }
 
-                        $rowId = $plex->addRecord($req);
-                        Capsule::table(WHMCSDNS_TABLE_RECORDS)->where('id', $rowId)->update([
-                            'weight' => $weight,
-                            'port' => $port,
-                        ]);
+                        $plex->addRecord($req);
 
                         $message = ['type' => 'success', 'text' => 'Record added.'];
                     }
@@ -2579,10 +2495,6 @@ function whmcs_dns_clientarea(array $vars): array
                         }
 
                         $plex->updateRecord($req);
-                        Capsule::table(WHMCSDNS_TABLE_RECORDS)->where('id', $rowId)->update([
-                            'weight' => $weight,
-                            'port' => $port,
-                        ]);
 
                         $message = ['type' => 'success', 'text' => 'Record updated.'];
                     }
@@ -2686,16 +2598,28 @@ function whmcs_dns_clientarea(array $vars): array
                 ->orderBy('type', 'asc')
                 ->orderBy('host', 'asc')
                 ->get()
-                ->map(function ($r) {
+                ->map(function ($r) use ($selectedDomain) {
+                    $type = strtoupper((string) $r->type);
+                    $storedValue = (string) $r->value;
+                    $record = $type === 'SRV' ? whmcs_dns_integration_record([
+                        'name' => (string) $r->host,
+                        'type' => $type,
+                        'value' => $storedValue,
+                        'ttl' => $r->ttl ?? 3600,
+                        'priority' => $r->priority,
+                        'weight' => $r->weight,
+                        'port' => $r->port,
+                    ], $selectedDomain) : null;
                     return [
                         'id'       => (int)$r->id,
-                        'type'     => (string)$r->type,
+                        'type'     => $type,
                         'host'     => (string)$r->host,
-                        'value'    => (string)$r->value,
+                        'value'    => $record['value'] ?? $storedValue,
+                        'stored_value' => $storedValue,
                         'ttl'      => $r->ttl !== null ? (int)$r->ttl : null,
                         'priority' => $r->priority !== null ? (int)$r->priority : null,
-                        'weight'   => $r->weight !== null ? (int)$r->weight : null,
-                        'port'     => $r->port !== null ? (int)$r->port : null,
+                        'weight'   => $record['weight'] ?? ($r->weight !== null ? (int)$r->weight : null),
+                        'port'     => $record['port'] ?? ($r->port !== null ? (int)$r->port : null),
                         'recordId' => (string)($r->recordId ?? ''),
                     ];
                 })

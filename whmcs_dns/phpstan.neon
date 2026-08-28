@@ -5,8 +5,11 @@ parameters:
         - hooks.php
         - permissions.php
         - dns.php
+        - dns-handler.php
         - cpanel-sync.php
+        - cpanel-sync-handler.php
         - connect-website.php
+        - connect-website-handler.php
         - whmcs_dns.php
     scanFiles:
         - stubs/whmcs.php

@@ -2,98 +2,10 @@
 
 declare(strict_types=1);
 
-use WHMCS\Database\Capsule;
-use WHMCS\Module\Addon\Setting;
-use PlexDNS\Providers\Bunny as BunnyProvider;
-
 require dirname(__DIR__, 3) . '/init.php';
 require_once __DIR__ . '/whmcs_dns.php';
+require_once __DIR__ . '/connect-website-handler.php';
 
-header('Content-Type: application/json; charset=utf-8');
-header('Cache-Control: no-store');
+use GuzzleHttp\Psr7\ServerRequest;
 
-/** @param array<string, string> $body */
-function whmcs_dns_connect_website_response(int $status, array $body): never
-{
-    http_response_code($status);
-    echo json_encode($body, JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR);
-    exit;
-}
-
-if (($_SERVER['REQUEST_METHOD'] ?? '') !== 'POST') {
-    header('Allow: POST');
-    whmcs_dns_connect_website_response(405, ['status' => 'error', 'error' => 'Method not allowed.']);
-}
-
-$credential = whmcs_dns_request_api_key();
-if ($credential === null) {
-    whmcs_dns_connect_website_response(401, ['status' => 'error', 'error' => 'Unauthorized.']);
-}
-
-$domain = '';
-$apiKey = '';
-try {
-    $rawBody = file_get_contents('php://input');
-    if ($rawBody === false || strlen($rawBody) > 8192) {
-        throw new InvalidArgumentException('Invalid request body.');
-    }
-    $request = whmcs_dns_website_request($rawBody);
-    $domain = $request['domain'];
-    $ipv4 = $request['ipv4'];
-    if (!whmcs_dns_api_key_allows($credential, 'dns_write', $domain)) {
-        whmcs_dns_connect_website_response(403, ['status' => 'error', 'error' => 'Forbidden.']);
-    }
-
-    $domains = Capsule::table('tbldomains')
-        ->select('userid', 'domain')
-        ->where('domain', $domain)
-        ->where('status', 'Active')
-        ->get()
-        ->filter(fn ($row): bool => whmcs_dns_normalize_hostname((string) $row->domain) === $domain)
-        ->values();
-    if ($domains->count() !== 1) {
-        whmcs_dns_connect_website_response(404, ['status' => 'error', 'error' => 'An exact active WHMCS domain is required.']);
-    }
-    $clientId = (int) $domains->first()->userid;
-
-    $zone = Capsule::table(WHMCSDNS_TABLE_ZONES)->where('domain_name', $domain)->first();
-    if (!$zone) {
-        throw new UnexpectedValueException('DNS is not enabled for this domain.', 404);
-    }
-    if ((int) $zone->client_id !== $clientId) {
-        throw new UnexpectedValueException('The local zone belongs to another WHMCS client.', 409);
-    }
-
-    if (Setting::getSettingValueForModule('whmcs_dns', 'provider') !== 'Bunny') {
-        throw new RuntimeException('Bunny DNS is not configured.');
-    }
-    $apiKey = (string) (Setting::getSettingValueForModule('whmcs_dns', 'apikey') ?? '');
-    if ($apiKey === '') {
-        throw new RuntimeException('Bunny DNS is not configured.');
-    }
-
-    whmcs_dns_refresh_bunny_zone($domain, $apiKey);
-    $zone = Capsule::table(WHMCSDNS_TABLE_ZONES)->where('domain_name', $domain)->first();
-    $zoneId = (string) $zone->zoneId;
-    $records = Capsule::table(WHMCSDNS_TABLE_RECORDS)->where('domain_id', $zone->id)->get()->map(
-        fn ($record): array => (array) $record
-    )->toArray();
-    $provider = new BunnyProvider(['apikey' => $apiKey, 'domain_name' => $domain, 'zone_id' => $zoneId]);
-    whmcs_dns_reconcile_bunny_website($provider, $clientId, $domain, $ipv4, $records);
-    whmcs_dns_refresh_bunny_zone($domain, $apiKey);
-
-    whmcs_dns_connect_website_response(200, ['status' => 'ok', 'error' => '']);
-} catch (JsonException | InvalidArgumentException $e) {
-    whmcs_dns_connect_website_response(400, ['status' => 'error', 'error' => $e->getMessage()]);
-} catch (UnexpectedValueException $e) {
-    whmcs_dns_connect_website_response($e->getCode() ?: 409, ['status' => 'error', 'error' => $e->getMessage()]);
-} catch (Throwable $e) {
-    if ($domain !== '' && $apiKey !== '') {
-        try {
-            whmcs_dns_refresh_bunny_zone($domain, $apiKey);
-        } catch (Throwable) {
-        }
-    }
-    logModuleCall('whmcs_dns', 'connect_website', ['domain' => $domain], null, $e->getMessage());
-    whmcs_dns_connect_website_response(502, ['status' => 'error', 'error' => 'Website DNS reconciliation failed.']);
-}
+whmcs_dns_emit_http_response(whmcs_dns_handle_connect_website_request(ServerRequest::fromGlobals()));

@@ -19,8 +19,11 @@ cp -a -- \
     "$module_dir/composer.json" \
     "$module_dir/composer.lock" \
     "$module_dir/connect-website.php" \
+    "$module_dir/connect-website-handler.php" \
     "$module_dir/cpanel-sync.php" \
+    "$module_dir/cpanel-sync-handler.php" \
     "$module_dir/dns.php" \
+    "$module_dir/dns-handler.php" \
     "$module_dir/hooks.php" \
     "$module_dir/openapi-dns-api.yaml" \
     "$module_dir/permissions.php" \

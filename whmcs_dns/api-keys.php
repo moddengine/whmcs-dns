@@ -7,6 +7,7 @@ if (!defined('WHMCS')) {
 }
 
 use WHMCS\Database\Capsule;
+use Psr\Http\Message\ServerRequestInterface;
 
 define('WHMCSDNS_TABLE_API_KEYS', 'whmcs_dns_api_keys');
 
@@ -104,9 +105,12 @@ function whmcs_dns_presented_api_key(string $authorization, string $authKey): ?s
 }
 
 /** @return array{id: int, key_id: string, scopes: array<int, string>, domains: array<int, string>}|null */
-function whmcs_dns_authenticate_api_key(string $authorization, string $authKey): ?array
+function whmcs_dns_authenticate_api_key(ServerRequestInterface $request): ?array
 {
-    $key = whmcs_dns_presented_api_key($authorization, $authKey);
+    $key = whmcs_dns_presented_api_key(
+        $request->getHeaderLine('Authorization'),
+        $request->getHeaderLine('Auth-Key')
+    );
     if ($key === null || preg_match('/^(WDNS_[a-f0-9]{16})_([a-f0-9]{64})$/D', $key, $matches) !== 1) {
         return null;
     }
@@ -122,15 +126,6 @@ function whmcs_dns_authenticate_api_key(string $authorization, string $authKey):
         return null;
     }
     return ['id' => (int) $row->id, 'key_id' => (string) $row->key_id, 'scopes' => $scopes, 'domains' => $domains];
-}
-
-/** @return array{id: int, key_id: string, scopes: array<int, string>, domains: array<int, string>}|null */
-function whmcs_dns_request_api_key(): ?array
-{
-    return whmcs_dns_authenticate_api_key(
-        (string) ($_SERVER['HTTP_AUTHORIZATION'] ?? $_SERVER['REDIRECT_HTTP_AUTHORIZATION'] ?? ''),
-        (string) ($_SERVER['HTTP_AUTH_KEY'] ?? '')
-    );
 }
 
 /** @param array{scopes: array<int, string>, domains: array<int, string>} $credential */
