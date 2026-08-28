@@ -18,7 +18,8 @@ $autoload = __DIR__ . '/vendor/autoload.php';
 if (file_exists($autoload)) {
     require_once $autoload;
 }
-require_once __DIR__ . '/whmcs_dns.php';
+require_once __DIR__ . '/permissions.php';
+require_once __DIR__ . '/api-keys.php';
 
 add_hook('DailyCronJob', 1, function (): void {
     whmcs_dns_cleanup_expired_api_keys();
