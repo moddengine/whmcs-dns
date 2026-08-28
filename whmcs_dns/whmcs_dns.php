@@ -32,37 +32,6 @@ if (file_exists($autoload)) {
 require_once __DIR__ . '/permissions.php';
 require_once __DIR__ . '/api-keys.php';
 
-function whmcs_dns_admin_manage_token(string $itemType, int $itemId): string
-{
-    $now = time();
-    $tokens = is_array($_SESSION['whmcs_dns_admin_manage_tokens'] ?? null)
-        ? $_SESSION['whmcs_dns_admin_manage_tokens']
-        : [];
-    $tokens = array_filter(
-        $tokens,
-        static fn (mixed $details): bool => is_array($details) && ($details['expires'] ?? 0) > $now
-    );
-    $token = bin2hex(random_bytes(32));
-    $tokens[$token] = ['item_type' => $itemType, 'item_id' => $itemId, 'expires' => $now + 300];
-    $_SESSION['whmcs_dns_admin_manage_tokens'] = $tokens;
-    return $token;
-}
-
-function whmcs_dns_admin_manage_token_valid(string $token, string $itemType, int $itemId): bool
-{
-    $tokens = is_array($_SESSION['whmcs_dns_admin_manage_tokens'] ?? null)
-        ? $_SESSION['whmcs_dns_admin_manage_tokens']
-        : [];
-    $details = $tokens[$token] ?? null;
-    unset($tokens[$token]);
-    $_SESSION['whmcs_dns_admin_manage_tokens'] = $tokens;
-
-    return is_array($details)
-        && ($details['expires'] ?? 0) > time()
-        && ($details['item_type'] ?? null) === $itemType
-        && ($details['item_id'] ?? null) === $itemId;
-}
-
 /**
  * Addon module config
  *
@@ -75,7 +44,7 @@ function whmcs_dns_config(): array
         'description' => 'DNS management addon enabling zone and record control via external providers',
         'author'      => 'Namingo',
         'language'    => 'english',
-        'version'     => '3.1.0',
+        'version'     => '3.1.1',
         'fields'      => [
             'provider' => [
                 'FriendlyName' => 'Provider',
