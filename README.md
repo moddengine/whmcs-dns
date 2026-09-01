@@ -172,8 +172,8 @@ From your server:
 
 ```bash
 cd /tmp
-wget https://github.com/moddengine/whmcs-dns/releases/download/v3.1.5/whmcs-dns-3.1.5.zip
-unzip whmcs-dns-3.1.5.zip
+wget https://github.com/moddengine/whmcs-dns/releases/download/v3.1.6/whmcs-dns-3.1.6.zip
+unzip whmcs-dns-3.1.6.zip
 cp -a whmcs_dns /path/to/whmcs/modules/addons/
 ```
 

@@ -254,6 +254,24 @@ namespace {
     );
     expect($mx->getStatusCode() === 201
         && responseBody($mx)['values'] === ['10 mx1.example.test', '20 mx2.example.test'], 'MX RRset failed.');
+    $zone = Capsule::table(WHMCSDNS_TABLE_ZONES)->where('domain_name', 'example.test')->first();
+    Capsule::table(WHMCSDNS_TABLE_RECORDS)->insert([
+        'domain_id' => $zone->id,
+        'recordId' => 'dmarc-report-wildcard',
+        'type' => 'TXT',
+        'host' => '*._report._dmarc',
+        'value' => 'v=DMARC1',
+        'ttl' => 300,
+    ]);
+    expect(request(
+        'PUT',
+        '/record/edm.example.test/MX',
+        $writeKey,
+        '{"values":["10 mx.example.test."]}'
+    )->getStatusCode() === 201, 'An unrelated legacy record blocked a nested MX RRset.');
+    expect(request('DELETE', '/record/edm.example.test/MX', $writeKey)->getStatusCode() === 204,
+        'Nested MX regression fixture was not removed.');
+    Capsule::table(WHMCSDNS_TABLE_RECORDS)->where('recordId', 'dmarc-report-wildcard')->delete();
     $srv = request(
         'PUT',
         '/record/_sip._tcp.example.test/SRV',
@@ -271,7 +289,6 @@ namespace {
         'Deleted RRset remains readable.');
     expect(request('GET', '/record/example.test/BOGUS', $readKey)->getStatusCode() === 400,
         'Unsupported record type was accepted.');
-    $zone = Capsule::table(WHMCSDNS_TABLE_ZONES)->where('domain_name', 'example.test')->first();
     $srvBeforeSync = Capsule::table(WHMCSDNS_TABLE_RECORDS)
         ->where('domain_id', $zone->id)
         ->where('type', 'SRV')
