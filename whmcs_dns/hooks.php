@@ -44,7 +44,6 @@ function whmcs_dns_admin_manage_dns_field(string $itemType, int $itemId): array
         'dns_action' => 'manage',
         'item_type' => $itemType,
         'item_id' => $itemId,
-        'dns_token' => whmcs_dns_admin_manage_token($itemType, $itemId),
     ]);
 
     return ['DNS Manager' => '<a class="btn btn-primary btn-sm" href="'

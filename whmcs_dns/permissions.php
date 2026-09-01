@@ -8,37 +8,6 @@ use WHMCS\Authentication\CurrentUser;
 use WHMCS\Database\Capsule;
 use WHMCS\Module\Addon\Setting;
 
-function whmcs_dns_admin_manage_token(string $itemType, int $itemId): string
-{
-    $now = time();
-    $tokens = is_array($_SESSION['whmcs_dns_admin_manage_tokens'] ?? null)
-        ? $_SESSION['whmcs_dns_admin_manage_tokens']
-        : [];
-    $tokens = array_filter(
-        $tokens,
-        static fn (mixed $details): bool => is_array($details) && ($details['expires'] ?? 0) > $now
-    );
-    $token = bin2hex(random_bytes(32));
-    $tokens[$token] = ['item_type' => $itemType, 'item_id' => $itemId, 'expires' => $now + 300];
-    $_SESSION['whmcs_dns_admin_manage_tokens'] = $tokens;
-    return $token;
-}
-
-function whmcs_dns_admin_manage_token_valid(string $token, string $itemType, int $itemId): bool
-{
-    $tokens = is_array($_SESSION['whmcs_dns_admin_manage_tokens'] ?? null)
-        ? $_SESSION['whmcs_dns_admin_manage_tokens']
-        : [];
-    $details = $tokens[$token] ?? null;
-    unset($tokens[$token]);
-    $_SESSION['whmcs_dns_admin_manage_tokens'] = $tokens;
-
-    return is_array($details)
-        && ($details['expires'] ?? 0) > time()
-        && ($details['item_type'] ?? null) === $itemType
-        && ($details['item_id'] ?? null) === $itemId;
-}
-
 function whmcs_dns_manage_dns_button_enabled(string $itemType, ?string $location = null): bool
 {
     $location ??= (string) (Setting::getSettingValueForModule(

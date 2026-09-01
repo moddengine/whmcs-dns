@@ -151,19 +151,6 @@ foreach ([
     }
 }
 
-$manageToken = whmcs_dns_admin_manage_token('service', 42);
-if (strlen($manageToken) !== 64
-    || !ctype_xdigit($manageToken)
-    || !whmcs_dns_admin_manage_token_valid($manageToken, 'service', 42)
-    || whmcs_dns_admin_manage_token_valid($manageToken, 'service', 42)) {
-    throw new RuntimeException('Manage DNS one-use token validation failed.');
-}
-$manageToken = whmcs_dns_admin_manage_token('service', 42);
-if (whmcs_dns_admin_manage_token_valid($manageToken, 'domain', 42)
-    || whmcs_dns_admin_manage_token_valid($manageToken, 'service', 42)) {
-    throw new RuntimeException('Manage DNS token binding failed.');
-}
-
 $generatedKey = whmcs_dns_generate_api_key();
 if (preg_match('/^(WDNS_[a-f0-9]{16})_([a-f0-9]{64})$/D', $generatedKey['key'], $keyParts) !== 1
     || $keyParts[1] !== $generatedKey['key_id']
@@ -568,11 +555,11 @@ if ($hooks === false
     || !str_contains($hooks, "whmcs_dns_zone_enabled(")
     || !str_contains($hooks, "'Active' : 'Disabled'")
     || !str_contains($hooks, 'target="_blank" rel="noopener"')
-    || !str_contains($hooks, "'dns_token' => whmcs_dns_admin_manage_token(")
+    || str_contains($hooks, 'dns_token')
     || str_contains($hooks, "'token' => generate_token('plain')")
     || !str_contains($module, "localAPI('CreateSsoToken'")
     || !str_contains($module, "'destination' => 'sso:custom_redirect'")
-    || !str_contains($module, 'whmcs_dns_admin_manage_token_valid(')
+    || str_contains($module, 'dns_token')
     || !str_contains($module, "check_token('WHMCS.admin.default')")
     || $apiKeys === false
     || !str_contains($apiKeys, "'create_api_key'")
