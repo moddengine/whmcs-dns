@@ -44,7 +44,7 @@ function whmcs_dns_config(): array
         'description' => 'DNS management addon enabling zone and record control via external providers',
         'author'      => 'Namingo',
         'language'    => 'english',
-        'version'     => '3.1.5',
+        'version'     => '3.1.6',
         'fields'      => [
             'provider' => [
                 'FriendlyName' => 'Provider',
@@ -472,7 +472,12 @@ function whmcs_dns_api_zone_context(string $fqdn): array
 
 function whmcs_dns_api_relative_name(string $fqdn, string $zone): string
 {
-    return $fqdn === $zone ? '' : substr($fqdn, 0, -strlen('.' . $zone));
+    $fqdn = whmcs_dns_normalize_hostname($fqdn);
+    $zone = whmcs_dns_normalize_hostname($zone);
+    if ($fqdn === '@' || $fqdn === $zone) {
+        return '';
+    }
+    return str_ends_with($fqdn, '.' . $zone) ? substr($fqdn, 0, -strlen('.' . $zone)) : $fqdn;
 }
 
 /** @return array{name: string, type: string, value: string, ttl: int, priority: int|null, weight: int|null, port: int|null} */
@@ -536,6 +541,9 @@ function whmcs_dns_api_rrset_rows(array $context, string $fqdn, string $type): a
         ->where('domain_id', $context['zone']->id)
         ->where('type', $type)
         ->get() as $row) {
+        if (whmcs_dns_api_relative_name((string) $row->host, $context['domain']) !== $name) {
+            continue;
+        }
         $record = whmcs_dns_integration_record([
             'name' => (string) $row->host,
             'type' => $type,
@@ -545,9 +553,7 @@ function whmcs_dns_api_rrset_rows(array $context, string $fqdn, string $type): a
             'weight' => $row->weight,
             'port' => $row->port,
         ], $context['domain']);
-        if ($record['name'] === $name) {
-            $matches[] = ['row' => $row, 'record' => $record];
-        }
+        $matches[] = ['row' => $row, 'record' => $record];
     }
     return $matches;
 }
@@ -633,15 +639,7 @@ function whmcs_dns_api_put_rrset(array $context, string $fqdn, string $type, int
         if ($rowType === $type) {
             continue;
         }
-        $rowName = whmcs_dns_integration_record([
-            'name' => (string) $row->host,
-            'type' => $rowType,
-            'value' => (string) $row->value,
-            'ttl' => $row->ttl ?? 300,
-            'priority' => $row->priority ?? ($rowType === 'MX' ? 0 : null),
-            'weight' => $row->weight,
-            'port' => $row->port,
-        ], $context['domain'])['name'];
+        $rowName = whmcs_dns_api_relative_name((string) $row->host, $context['domain']);
         if ($rowName === $name && ($type === 'CNAME' || $rowType === 'CNAME')) {
             throw new UnexpectedValueException('A CNAME cannot coexist with another record at the same name.', 409);
         }
