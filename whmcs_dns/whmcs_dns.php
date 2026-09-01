@@ -44,7 +44,7 @@ function whmcs_dns_config(): array
         'description' => 'DNS management addon enabling zone and record control via external providers',
         'author'      => 'Namingo',
         'language'    => 'english',
-        'version'     => '3.1.4',
+        'version'     => '3.1.5',
         'fields'      => [
             'provider' => [
                 'FriendlyName' => 'Provider',
@@ -1282,7 +1282,8 @@ function whmcs_dns_integration_record(array $record, string $domainName): array
     if (in_array($type, ['CNAME', 'MX', 'NS', 'PTR', 'SRV'], true)) {
         $value = strtolower(rtrim($value, '.'));
         if (!str_contains($value, '.')
-            || filter_var($value, FILTER_VALIDATE_DOMAIN, FILTER_FLAG_HOSTNAME) === false) {
+            || filter_var($type === 'CNAME' ? str_replace('_', 'a', $value) : $value,
+                FILTER_VALIDATE_DOMAIN, FILTER_FLAG_HOSTNAME) === false) {
             throw new InvalidArgumentException("{$type} records require a valid hostname value.");
         }
     } elseif ($type === 'A' && filter_var($value, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4) === false) {

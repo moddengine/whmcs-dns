@@ -433,6 +433,16 @@ if ($mx !== [
     throw new RuntimeException('Integration record canonicalization failed.');
 }
 
+$cname = whmcs_dns_integration_record([
+    'name' => 'litesrv._domainkey',
+    'type' => 'CNAME',
+    'value' => 'litesrv._domainkey.mlsend.com',
+    'ttl' => 3600,
+], 'example.com');
+if ($cname['value'] !== 'litesrv._domainkey.mlsend.com') {
+    throw new RuntimeException('CNAME target underscores were not preserved.');
+}
+
 $compactSrv = whmcs_dns_integration_record([
     'name' => '_sip._tcp',
     'type' => 'SRV',
