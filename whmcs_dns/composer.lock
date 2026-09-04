@@ -4,7 +4,7 @@
         "Read more about it at https://getcomposer.org/doc/01-basic-usage.md#installing-dependencies",
         "This file is @generated automatically"
     ],
-    "content-hash": "66a66a99b9eb6bd7f0467a66859905ee",
+    "content-hash": "e572a5c0a6b8fc45bd26668db4c9754b",
     "packages": [
         {
             "name": "badcow/dns",
@@ -3667,6 +3667,46 @@
                 "source": "https://github.com/laravel/framework"
             },
             "time": "2025-09-08T19:05:53+00:00"
+        },
+        {
+            "name": "moddengine/whmcs-plugin-updater",
+            "version": "v0.1.0",
+            "source": {
+                "type": "git",
+                "url": "https://github.com/moddengine/whmcs-plugin-updater.git",
+                "reference": "2aa873eaf40778bef11ecb2297c5eb60a412e318"
+            },
+            "dist": {
+                "type": "zip",
+                "url": "https://api.github.com/repos/moddengine/whmcs-plugin-updater/zipball/2aa873eaf40778bef11ecb2297c5eb60a412e318",
+                "reference": "2aa873eaf40778bef11ecb2297c5eb60a412e318",
+                "shasum": ""
+            },
+            "require": {
+                "php": ">=8.1"
+            },
+            "require-dev": {
+                "phpstan/phpstan": "^2.1"
+            },
+            "bin": [
+                "bin/whmcs-plugin-manifest"
+            ],
+            "type": "library",
+            "autoload": {
+                "classmap": [
+                    "modules/addons/pluginupdater/lib/Core.php"
+                ]
+            },
+            "notification-url": "https://packagist.org/downloads/",
+            "license": [
+                "MPL-2.0"
+            ],
+            "description": "WHMCS plugin update manifests and updater addon",
+            "support": {
+                "issues": "https://github.com/moddengine/whmcs-plugin-updater/issues",
+                "source": "https://github.com/moddengine/whmcs-plugin-updater/tree/v0.1.0"
+            },
+            "time": "2026-09-04T05:37:27+00:00"
         },
         {
             "name": "myclabs/deep-copy",

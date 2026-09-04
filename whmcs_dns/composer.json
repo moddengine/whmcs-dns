@@ -1,4 +1,7 @@
 {
+    "name": "moddengine/whmcs-dns",
+    "description": "DNS hosting module for WHMCS",
+    "license": "MIT",
     "repositories": [
         {
             "type": "vcs",
@@ -21,7 +24,8 @@
     "require-dev": {
         "illuminate/database": "^10.0",
         "phpstan/phpstan": "^2.1",
-        "phpunit/phpunit": "^12.5"
+        "phpunit/phpunit": "^12.5",
+        "moddengine/whmcs-plugin-updater": "^0.1"
     },
     "scripts": {
         "analyse": "phpstan analyse --no-progress --memory-limit=512M",

@@ -42,6 +42,10 @@ composer check-platform-reqs --working-dir="$install_dir" --no-dev
 test -f "$install_dir/vendor/autoload.php"
 test -d "$install_dir/vendor/namingo/plexdns"
 
+"$module_dir/vendor/bin/whmcs-plugin-manifest" "$install_dir" \
+    --repository moddengine/whmcs-dns \
+    --whmcs-max-exclusive 10.0.0
+
 archive_name="whmcs-dns-$version.zip"
 (cd -- "$release_tmp" && zip -qr "$archive_name" whmcs_dns)
 mv -f -- "$release_tmp/$archive_name" "$output_dir/$archive_name"
