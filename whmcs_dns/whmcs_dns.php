@@ -44,7 +44,7 @@ function whmcs_dns_config(): array
         'description' => 'DNS management addon enabling zone and record control via external providers',
         'author'      => 'Namingo',
         'language'    => 'english',
-        'version'     => '3.1.6',
+        'version'     => '3.1.7',
         'fields'      => [
             'provider' => [
                 'FriendlyName' => 'Provider',

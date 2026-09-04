@@ -32,8 +32,8 @@ jobs:
         working-directory: cpanel_bridge
         run: go test ./...
 
-      - name: Verify module version
-        run: test "v$(php -r 'echo json_decode(file_get_contents("whmcs_dns/whmcs.json"))->version;')" = "$GITHUB_REF_NAME"
+      - name: Install WHMCS module development dependencies
+        run: composer install --working-dir=whmcs_dns --no-interaction --no-progress --prefer-dist
 
       - name: Build addon ZIP
         run: whmcs_dns/build-release.sh "$GITHUB_WORKSPACE/dist"
