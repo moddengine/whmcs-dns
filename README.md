@@ -104,7 +104,7 @@ Rows distinguish zones that are in sync, missing from Bunny, in need of local re
 
 Version 3.0 replaces the old per-endpoint keys. After upgrading, create new scoped credentials under **Addons → DNS Hosting → Automation API Keys**; old refresh, connect-website, and cPanel keys no longer work. Each key is shown once and can be limited to specific managed apex domains or `*`. Expired keys stop working immediately and are deleted by the daily cron 14 days later.
 
-Scopes are independent: `dns_read` reads RRsets, `dns_write` changes RRsets and permits the connect-website endpoint, `dns_admin` refreshes provider state, and `auth_admin` is reserved for a future credential API. The cPanel endpoint requires both `dns_write` and `dns_admin` because it can enable a missing zone.
+Scopes are independent: `dns_read` reads RRsets, `dns_write` changes RRsets and permits the connect-website endpoint, `dns_admin` refreshes provider state, and `auth_admin` is reserved for a future credential API.
 
 Send credentials as either `Auth-Key: WDNS_...` or `Authorization: Bearer WDNS_...`. The DNS API is documented in `whmcs_dns/openapi-dns-api.yaml` and exposes:
 
@@ -139,19 +139,19 @@ Sibling addons in the same WHMCS installation may `require_once` `whmcs_dns.php`
 
 The optional `whmcs-dns-bridge` runs on a WHM/cPanel host and sends selected cPanel DNS updates to this addon. By default it imports only apex/configured-domain A records and `*._domainkey` TXT records. cPanel-generated service hosts, SPF, DMARC, DCV, MX, CNAME, SRV, NS, SOA, and other records are ignored.
 
-1. In **Addons → DNS Hosting → Automation API Keys**, create a key with `dns_write` and `dns_admin` scopes for the required domains.
+1. In **Addons → DNS Hosting → Automation API Keys**, create a key with `dns_write` scope for the required domains. The zones must already be enabled in WHMCS-DNS.
 2. Download the bridge archive matching the cPanel host architecture and extract it.
 3. In **WHM → Server Configuration → Tweak Settings → Software**, disable the `dnsadmin` checkbox under **Dormant services**. cPanel requires `dnsadmin` to remain active for custom DNS cluster plugins.
 4. Run `sudo ./install.sh`. The installer enables DNS clustering and creates the **WHMCS-DNS** backend with the **Write-only** role directly because current cPanel releases restrict the WHM add-backend form to bundled modules.
-5. Edit `/usr/local/sbin/whmcs-dns-bridge.json` with the endpoint, key, and the matching WHMCS server ID, then run `sudo systemctl start whmcs-dns-bridge`.
+5. Edit `/usr/local/sbin/whmcs-dns-bridge.json` with the `dns.php` endpoint and key, then run `sudo systemctl start whmcs-dns-bridge`.
 
-The daemon acknowledges a cPanel operation only after its record updates are durably queued. It delivers one update at a time, retries failures five times, then retains them under `/var/lib/whmcs-dns-bridge/dead`. Inspect logs with `journalctl -u whmcs-dns-bridge`; replay a corrected dead-letter job by resetting its `attempts` field to `0`, then move and rename it in the sibling `ready` directory as `<id>.json` using the `id` stored in the file.
+The daemon acknowledges a cPanel operation only after its record updates are durably queued. It logs each received action, the selected and total records per zone, queue size, and every delivery attempt/result without logging record values or credentials. Set `debug` to `true` to also log resolved cPanel owners, allowed-domain counts, each selected record's name/type/TTL, and HTTP response statuses. It delivers one update at a time, retries failures five times, then retains them under `/var/lib/whmcs-dns-bridge/dead`. Inspect logs with `journalctl -u whmcs-dns-bridge`; replay a corrected dead-letter job by resetting its `attempts` field to `0`, then move and rename it in the sibling `ready` directory as `<id>.json` using the `id` stored in the file.
 
 Synchronization is one-way from cPanel to WHMCS-DNS. Changes made in WHMCS-DNS and record deletions are not sent back to cPanel; newer pending values for the same record replace older retries.
 
 `process_synczones` is disabled by default. Enable it in the adjacent JSON configuration only when bulk/initial cPanel zone synchronization should be imported. Zones containing more than 250 total records are rejected before filtering.
 
-For migrations or accounts created outside WHMCS, set `relaxed_sync` to `true` in the bridge JSON configuration. Relaxed sync omits the cPanel username and imports every A record inside the zone, including mail and cPanel service hosts, plus `*._domainkey` TXT records. WHMCS maps each update to the longest matching `Active` or `Pending` registered domain or hosting-service domain and rejects ambiguous ownership. The `server_id` is retained for compatibility but is not part of relaxed ownership matching. Enable this only for a trusted bridge key: the key can update any uniquely eligible WHMCS domain regardless of its current cPanel server or username.
+For migrations or accounts created outside WHMCS, set `relaxed_sync` to `true` in the bridge JSON configuration. Relaxed sync imports every A record inside the zone, including mail and cPanel service hosts, plus `*._domainkey` TXT records. Enable this only with a domain-scoped bridge key: the key controls which existing WHMCS-DNS zones can be updated.
 
 If WHMCS-DNS is the customer-facing editor, separately hide cPanel's Zone Editor through WHM Feature Manager. You may also disable the local nameserver daemon, but retain cPanel's DNS role and `dnsadmin` integration. These are deployment choices; the bridge does not modify cPanel settings.
 
@@ -172,8 +172,8 @@ From your server:
 
 ```bash
 cd /tmp
-wget https://github.com/moddengine/whmcs-dns/releases/download/v3.1.7/whmcs-dns-3.1.7.zip
-unzip whmcs-dns-3.1.7.zip
+wget https://github.com/moddengine/whmcs-dns/releases/download/v3.2.0/whmcs-dns-3.2.0.zip
+unzip whmcs-dns-3.2.0.zip
 cp -a whmcs_dns /path/to/whmcs/modules/addons/
 ```
 
