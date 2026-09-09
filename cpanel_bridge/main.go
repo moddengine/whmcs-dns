@@ -36,9 +36,9 @@ const (
 type config struct {
 	Endpoint         string `json:"endpoint"`
 	Token            string `json:"token"`
-	ServerID         int    `json:"server_id"`
 	ProcessSynczones bool   `json:"process_synczones"`
 	RelaxedSync      bool   `json:"relaxed_sync"`
+	Debug            bool   `json:"debug"`
 	TimeoutSeconds   int    `json:"timeout_seconds"`
 }
 
@@ -63,11 +63,10 @@ type socketResponse struct {
 }
 
 type updateRequest struct {
-	ServerID   int    `json:"server_id"`
-	CpanelUser string `json:"cpanel_user,omitempty"`
-	Domain     string `json:"domain"`
-	Type       string `json:"type"`
-	Value      string `json:"value"`
+	Domain string `json:"domain"`
+	Type   string `json:"type"`
+	Value  string `json:"value"`
+	TTL    uint32 `json:"ttl"`
 }
 
 type job struct {
@@ -95,8 +94,9 @@ func main() {
 		logger.Fatal(err)
 	}
 	if cfg.RelaxedSync {
-		logger.Printf("WARNING: relaxed sync enabled; cPanel account ownership checks are disabled")
+		logger.Printf("WARNING: relaxed sync enabled; cPanel account record filters are disabled")
 	}
+	logger.Printf("configured endpoint=%s process_synczones=%t relaxed_sync=%t debug=%t", cfg.Endpoint, cfg.ProcessSynczones, cfg.RelaxedSync, cfg.Debug)
 	s := &spool{
 		dir:    defaultState,
 		wake:   make(chan struct{}, 1),
@@ -133,8 +133,14 @@ func loadConfig() (config, error) {
 	if err != nil || endpoint.Host == "" || (endpoint.Scheme != "https" && !isLoopback(endpoint.Hostname())) {
 		return config{}, errors.New("endpoint must be an HTTPS URL (HTTP is allowed only for loopback)")
 	}
-	if cfg.Token == "" || cfg.ServerID < 1 {
-		return config{}, errors.New("token and positive server_id are required")
+	if endpoint.User != nil || endpoint.RawQuery != "" || endpoint.Fragment != "" {
+		return config{}, errors.New("endpoint must not contain credentials, a query, or a fragment")
+	}
+	if !strings.HasSuffix(strings.TrimRight(endpoint.Path, "/"), "/dns.php") {
+		return config{}, errors.New("endpoint must point to the WHMCS-DNS dns.php API")
+	}
+	if cfg.Token == "" {
+		return config{}, errors.New("token is required")
 	}
 	if cfg.TimeoutSeconds == 0 {
 		cfg.TimeoutSeconds = 30
@@ -195,6 +201,7 @@ func handleConnection(conn *net.UnixConn, s *spool, logger *log.Logger) {
 	var request socketRequest
 	decoder := json.NewDecoder(conn)
 	if err := decoder.Decode(&request); err != nil {
+		logger.Printf("rejected invalid socket request: %v", err)
 		_ = json.NewEncoder(conn).Encode(socketResponse{Error: "invalid request"})
 		return
 	}
@@ -266,6 +273,7 @@ func (s *spool) init() error {
 
 func (s *spool) accept(request socketRequest) socketResponse {
 	action := strings.ToUpper(strings.TrimSpace(request.Action))
+	s.logger.Printf("received action=%s id=%s user=%s zones=%d", action, request.DNSUniqID, request.CpanelUser, len(request.Zones))
 	if action == "SYNCZONES" && !s.cfg.ProcessSynczones {
 		s.logger.Printf("SYNCZONES skipped by configuration")
 		return socketResponse{OK: true, Skipped: true}
@@ -299,15 +307,16 @@ func (s *spool) accept(request socketRequest) socketResponse {
 			if err != nil {
 				return socketResponse{Retryable: true, Error: err.Error()}
 			}
+			s.debugf("action=%s zone=%s owner=%s allowed_domains=%d", action, zone, user, len(allowed))
 		}
-		updates, err := recordsFromZone(input.Data, zone, allowed)
+		updates, total, err := recordsFromZone(input.Data, zone, allowed)
 		if err != nil {
 			return socketResponse{Error: err.Error()}
 		}
+		s.logger.Printf("action=%s zone=%s selected=%d total=%d", action, zone, len(updates), total)
 		for _, update := range updates {
-			update.ServerID = s.cfg.ServerID
-			update.CpanelUser = user
-			identity := fmt.Sprintf("%d\x00%s\x00%s\x00%s", update.ServerID, update.CpanelUser, update.Domain, update.Type)
+			s.debugf("action=%s selected record=%s type=%s ttl=%d", action, update.Domain, update.Type, update.TTL)
+			identity := update.Domain + "\x00" + update.Type
 			sum := sha256.Sum256([]byte(identity))
 			jobs = append(jobs, job{ID: hex.EncodeToString(sum[:]), Request: update})
 		}
@@ -316,7 +325,14 @@ func (s *spool) accept(request socketRequest) socketResponse {
 	if err := s.enqueue(jobs); err != nil {
 		return socketResponse{Retryable: true, Error: err.Error()}
 	}
+	s.logger.Printf("queued action=%s id=%s updates=%d", action, request.DNSUniqID, len(jobs))
 	return socketResponse{OK: true, Queued: len(jobs)}
+}
+
+func (s *spool) debugf(format string, values ...any) {
+	if s.cfg.Debug {
+		s.logger.Printf("DEBUG: "+format, values...)
+	}
 }
 
 func normalizeName(name string) string {
@@ -411,7 +427,7 @@ func collectDomains(value any) []string {
 	return domains
 }
 
-func recordsFromZone(zoneData, zone string, allowed map[string]bool) ([]updateRequest, error) {
+func recordsFromZone(zoneData, zone string, allowed map[string]bool) ([]updateRequest, int, error) {
 	parser := dns.NewZoneParser(strings.NewReader(zoneData), dns.Fqdn(zone), "")
 	updates := make([]updateRequest, 0)
 	seen := make(map[string]bool)
@@ -419,7 +435,7 @@ func recordsFromZone(zoneData, zone string, allowed map[string]bool) ([]updateRe
 	for record, ok := parser.Next(); ok; record, ok = parser.Next() {
 		count++
 		if count > maxZoneRecords {
-			return nil, fmt.Errorf("zone %s contains more than %d records", zone, maxZoneRecords)
+			return nil, count, fmt.Errorf("zone %s contains more than %d records", zone, maxZoneRecords)
 		}
 		name := normalizeName(record.Header().Name)
 		var update updateRequest
@@ -431,7 +447,7 @@ func recordsFromZone(zoneData, zone string, allowed map[string]bool) ([]updateRe
 			if allowed != nil && !allowed[name] {
 				continue
 			}
-			update = updateRequest{Domain: name, Type: "A", Value: typed.A.String()}
+			update = updateRequest{Domain: name, Type: "A", Value: typed.A.String(), TTL: record.Header().Ttl}
 		case *dns.TXT:
 			if !strings.HasSuffix(name, "."+zone) {
 				continue
@@ -440,24 +456,24 @@ func recordsFromZone(zoneData, zone string, allowed map[string]bool) ([]updateRe
 			if name == zone || !strings.HasSuffix(relative, "._domainkey") {
 				continue
 			}
-			update = updateRequest{Domain: name, Type: "TXT", Value: strings.Join(typed.Txt, "")}
+			update = updateRequest{Domain: name, Type: "TXT", Value: strings.Join(typed.Txt, ""), TTL: record.Header().Ttl}
 		default:
 			continue
 		}
 		key := update.Domain + "\x00" + update.Type
 		if seen[key] {
-			return nil, fmt.Errorf("eligible RRset %s %s has multiple values", update.Domain, update.Type)
+			return nil, count, fmt.Errorf("eligible RRset %s %s has multiple values", update.Domain, update.Type)
 		}
 		seen[key] = true
 		updates = append(updates, update)
 	}
 	if err := parser.Err(); err != nil {
-		return nil, fmt.Errorf("parse zone %s: %w", zone, err)
+		return nil, count, fmt.Errorf("parse zone %s: %w", zone, err)
 	}
 	sort.Slice(updates, func(i, j int) bool {
 		return updates[i].Domain+"\x00"+updates[i].Type < updates[j].Domain+"\x00"+updates[j].Type
 	})
-	return updates, nil
+	return updates, count, nil
 }
 
 func (s *spool) enqueue(jobs []job) error {
@@ -553,6 +569,7 @@ func (s *spool) processOne(now time.Time) bool {
 		if err := os.Remove(path); err != nil {
 			s.logger.Printf("remove delivered job %s: %v", queued.ID, err)
 		}
+		s.logger.Printf("delivered job=%s record=%s type=%s", queued.ID, queued.Request.Domain, queued.Request.Type)
 		return true
 	} else {
 		s.mu.Lock()
@@ -629,11 +646,23 @@ func (s *spool) deadPath(base string) string {
 }
 
 func (s *spool) deliver(queued job) error {
-	body, err := json.Marshal(queued.Request)
+	ttl := queued.Request.TTL
+	if ttl == 0 {
+		ttl = 3600
+	}
+	body, err := json.Marshal(struct {
+		TTL    uint32   `json:"ttl"`
+		Values []string `json:"values"`
+	}{TTL: ttl, Values: []string{queued.Request.Value}})
 	if err != nil {
 		return err
 	}
-	request, err := http.NewRequest(http.MethodPost, s.cfg.Endpoint, bytes.NewReader(body))
+	endpoint, err := url.JoinPath(s.cfg.Endpoint, "record", queued.Request.Domain, queued.Request.Type)
+	if err != nil {
+		return err
+	}
+	s.logger.Printf("delivering job=%s method=PUT record=%s type=%s ttl=%d attempt=%d", queued.ID, queued.Request.Domain, queued.Request.Type, ttl, queued.Attempts+1)
+	request, err := http.NewRequest(http.MethodPut, endpoint, bytes.NewReader(body))
 	if err != nil {
 		return err
 	}
@@ -645,6 +674,7 @@ func (s *spool) deliver(queued job) error {
 	}
 	defer response.Body.Close()
 	responseBody, _ := io.ReadAll(io.LimitReader(response.Body, 2048))
+	s.debugf("job=%s HTTP status=%d", queued.ID, response.StatusCode)
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		return fmt.Errorf("HTTP %d: %s", response.StatusCode, strings.TrimSpace(string(responseBody)))
 	}

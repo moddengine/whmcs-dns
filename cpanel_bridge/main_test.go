@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"io"
 	"log"
@@ -26,17 +27,20 @@ default._domainkey 300 IN TXT "v=DKIM1; " "p=abc"
 _dmarc 300 IN TXT "v=DMARC1; p=none"
 _cpanel-dcv-test-record 300 IN TXT "temporary"
 `
-	records, err := recordsFromZone(zone, "example.com", map[string]bool{
+	records, total, err := recordsFromZone(zone, "example.com", map[string]bool{
 		"example.com": true, "www.example.com": true, "shop.example.com": true,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
+	if total != 10 {
+		t.Fatalf("total records = %d", total)
+	}
 	want := []updateRequest{
-		{Domain: "default._domainkey.example.com", Type: "TXT", Value: "v=DKIM1; p=abc"},
-		{Domain: "example.com", Type: "A", Value: "1.2.3.4"},
-		{Domain: "shop.example.com", Type: "A", Value: "1.2.3.6"},
-		{Domain: "www.example.com", Type: "A", Value: "1.2.3.5"},
+		{Domain: "default._domainkey.example.com", Type: "TXT", Value: "v=DKIM1; p=abc", TTL: 300},
+		{Domain: "example.com", Type: "A", Value: "1.2.3.4", TTL: 300},
+		{Domain: "shop.example.com", Type: "A", Value: "1.2.3.6", TTL: 300},
+		{Domain: "www.example.com", Type: "A", Value: "1.2.3.5", TTL: 300},
 	}
 	if encoded, expected := mustJSON(records), mustJSON(want); encoded != expected {
 		t.Fatalf("records = %s, want %s", encoded, expected)
@@ -53,16 +57,16 @@ outside.example.net. 300 IN A 1.2.3.8
 default._domainkey 300 IN TXT "v=DKIM1; p=abc"
 @ 300 IN TXT "v=spf1 -all"
 `
-	records, err := recordsFromZone(zone, "example.com", nil)
+	records, _, err := recordsFromZone(zone, "example.com", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	want := []updateRequest{
-		{Domain: "cpanel.example.com", Type: "A", Value: "1.2.3.7"},
-		{Domain: "default._domainkey.example.com", Type: "TXT", Value: "v=DKIM1; p=abc"},
-		{Domain: "example.com", Type: "A", Value: "1.2.3.4"},
-		{Domain: "mail.example.com", Type: "A", Value: "1.2.3.6"},
-		{Domain: "www.example.com", Type: "A", Value: "1.2.3.5"},
+		{Domain: "cpanel.example.com", Type: "A", Value: "1.2.3.7", TTL: 300},
+		{Domain: "default._domainkey.example.com", Type: "TXT", Value: "v=DKIM1; p=abc", TTL: 300},
+		{Domain: "example.com", Type: "A", Value: "1.2.3.4", TTL: 300},
+		{Domain: "mail.example.com", Type: "A", Value: "1.2.3.6", TTL: 300},
+		{Domain: "www.example.com", Type: "A", Value: "1.2.3.5", TTL: 300},
 	}
 	if encoded, expected := mustJSON(records), mustJSON(want); encoded != expected {
 		t.Fatalf("records = %s, want %s", encoded, expected)
@@ -72,7 +76,7 @@ default._domainkey 300 IN TXT "v=DKIM1; p=abc"
 func TestRelaxedAcceptDoesNotNeedCpanelOwner(t *testing.T) {
 	s := &spool{
 		dir: t.TempDir(), wake: make(chan struct{}, 1),
-		cfg: config{ServerID: 3, RelaxedSync: true}, logger: logForTest(t),
+		cfg: config{RelaxedSync: true}, logger: logForTest(t),
 	}
 	if err := s.init(); err != nil {
 		t.Fatal(err)
@@ -94,9 +98,50 @@ func TestRelaxedAcceptDoesNotNeedCpanelOwner(t *testing.T) {
 			t.Fatal(err)
 		}
 		var queued job
-		if json.Unmarshal(data, &queued) != nil || queued.Request.CpanelUser != "" {
+		if json.Unmarshal(data, &queued) != nil || queued.Request.TTL != 300 {
 			t.Fatalf("invalid relaxed job: %s", data)
 		}
+	}
+}
+
+func TestAcceptLogsSingleAndZoneSync(t *testing.T) {
+	var output bytes.Buffer
+	s := &spool{
+		dir: t.TempDir(), wake: make(chan struct{}, 1),
+		cfg:    config{ProcessSynczones: true, RelaxedSync: true},
+		logger: log.New(&output, "", 0),
+	}
+	if err := s.init(); err != nil {
+		t.Fatal(err)
+	}
+	for _, action := range []string{"SAVEZONE", "SYNCZONES"} {
+		response := s.accept(socketRequest{
+			Action: action, DNSUniqID: "request-1", CpanelUser: "cpuser",
+			Zones: []zoneInput{{Zone: "example.com", Data: "@ 300 IN A 1.2.3.4\n"}},
+		})
+		if !response.OK || response.Queued != 1 {
+			t.Fatalf("%s response = %+v", action, response)
+		}
+		for _, message := range []string{
+			"received action=" + action,
+			"action=" + action + " zone=example.com selected=1 total=1",
+			"queued action=" + action,
+		} {
+			if !strings.Contains(output.String(), message) {
+				t.Errorf("missing log %q in %q", message, output.String())
+			}
+		}
+	}
+	if strings.Contains(output.String(), "DEBUG:") {
+		t.Fatalf("debug output emitted while disabled: %q", output.String())
+	}
+	s.cfg.Debug = true
+	s.accept(socketRequest{
+		Action: "SAVEZONE", DNSUniqID: "request-2",
+		Zones: []zoneInput{{Zone: "example.com", Data: "@ 300 IN A 1.2.3.4\n"}},
+	})
+	if !strings.Contains(output.String(), "DEBUG: action=SAVEZONE selected record=example.com type=A ttl=300") {
+		t.Fatalf("debug record output missing: %q", output.String())
 	}
 }
 
@@ -107,14 +152,14 @@ func TestRecordsFromZoneLimitAndDuplicates(t *testing.T) {
 		zone.WriteString(strings.Repeat("a", i%10))
 		zone.WriteString(" 300 IN MX 10 mail.example.com.\n")
 	}
-	if _, err := recordsFromZone(zone.String(), "example.com", map[string]bool{"example.com": true}); err != nil {
+	if _, _, err := recordsFromZone(zone.String(), "example.com", map[string]bool{"example.com": true}); err != nil {
 		t.Fatalf("250 records rejected: %v", err)
 	}
 	zone.WriteString("extra 300 IN MX 10 mail.example.com.\n")
-	if _, err := recordsFromZone(zone.String(), "example.com", map[string]bool{"example.com": true}); err == nil {
+	if _, _, err := recordsFromZone(zone.String(), "example.com", map[string]bool{"example.com": true}); err == nil {
 		t.Fatal("251 records accepted")
 	}
-	if _, err := recordsFromZone("@ 300 IN A 1.2.3.4\n@ 300 IN A 1.2.3.5\n", "example.com", map[string]bool{"example.com": true}); err == nil {
+	if _, _, err := recordsFromZone("@ 300 IN A 1.2.3.4\n@ 300 IN A 1.2.3.5\n", "example.com", map[string]bool{"example.com": true}); err == nil {
 		t.Fatal("multi-value eligible RRset accepted")
 	}
 }
@@ -128,14 +173,23 @@ func TestSpoolDeliversOneAtATimeAndRetries(t *testing.T) {
 		if request.Header.Get("Auth-Key") != "secret" {
 			t.Errorf("Auth-Key header = %q", request.Header.Get("Auth-Key"))
 		}
+		if request.Method != http.MethodPut || request.URL.Path != "/modules/addons/whmcs_dns/dns.php/record/example.com/A" {
+			t.Errorf("request = %s %s", request.Method, request.URL.Path)
+		}
 		current := inFlight.Add(1)
 		defer inFlight.Add(-1)
 		if current > maximum.Load() {
 			maximum.Store(current)
 		}
-		var update updateRequest
-		_ = json.NewDecoder(request.Body).Decode(&update)
-		values = append(values, update.Value)
+		var rrset struct {
+			TTL    uint32   `json:"ttl"`
+			Values []string `json:"values"`
+		}
+		_ = json.NewDecoder(request.Body).Decode(&rrset)
+		if rrset.TTL != 300 || len(rrset.Values) != 1 {
+			t.Errorf("invalid RRset: %+v", rrset)
+		}
+		values = append(values, rrset.Values[0])
 		if calls.Add(1) == 1 {
 			return &http.Response{StatusCode: http.StatusBadGateway, Body: io.NopCloser(strings.NewReader("retry"))}, nil
 		}
@@ -145,13 +199,13 @@ func TestSpoolDeliversOneAtATimeAndRetries(t *testing.T) {
 	state := t.TempDir()
 	s := &spool{
 		dir: state, wake: make(chan struct{}, 1), client: client,
-		cfg:    config{Endpoint: "https://example.invalid/cpanel-sync.php", Token: "secret", ServerID: 1},
+		cfg:    config{Endpoint: "https://example.invalid/modules/addons/whmcs_dns/dns.php", Token: "secret"},
 		logger: logForTest(t),
 	}
 	if err := s.init(); err != nil {
 		t.Fatal(err)
 	}
-	queued := job{ID: "one", Request: updateRequest{ServerID: 1, CpanelUser: "cpuser", Domain: "example.com", Type: "A", Value: "1.2.3.4"}}
+	queued := job{ID: "one", Request: updateRequest{Domain: "example.com", Type: "A", Value: "1.2.3.4", TTL: 300}}
 	if err := s.enqueue([]job{queued, queued}); err != nil {
 		t.Fatal(err)
 	}
@@ -192,13 +246,13 @@ func TestSpoolDeadLettersAfterFiveAttempts(t *testing.T) {
 	state := t.TempDir()
 	s := &spool{
 		dir: state, wake: make(chan struct{}, 1), client: client,
-		cfg:    config{Endpoint: "https://example.invalid/cpanel-sync.php", Token: "secret", ServerID: 1},
+		cfg:    config{Endpoint: "https://example.invalid/modules/addons/whmcs_dns/dns.php", Token: "secret"},
 		logger: logForTest(t),
 	}
 	if err := s.init(); err != nil {
 		t.Fatal(err)
 	}
-	queued := job{ID: "dead", Request: updateRequest{ServerID: 1, CpanelUser: "cpuser", Domain: "example.com", Type: "A", Value: "1.2.3.4"}}
+	queued := job{ID: "dead", Request: updateRequest{Domain: "example.com", Type: "A", Value: "1.2.3.4", TTL: 300}}
 	if err := s.enqueue([]job{queued}); err != nil {
 		t.Fatal(err)
 	}
