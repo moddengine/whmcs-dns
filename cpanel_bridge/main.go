@@ -459,26 +459,34 @@ func recordsFromZone(zoneData, zone string, allowed map[string]bool) ([]updateRe
 				continue
 			}
 			update = updateRequest{Domain: name, Type: "A", Value: typed.A.String(), TTL: record.Header().Ttl}
+		case *dns.CNAME:
+			if name != zone && !strings.HasSuffix(name, "."+zone) {
+				continue
+			}
+			if allowed != nil && !allowed[name] {
+				continue
+			}
+			update = updateRequest{Domain: name, Type: "CNAME", Value: normalizeName(typed.Target), TTL: record.Header().Ttl}
+		case *dns.AAAA:
+			if allowed != nil || (name != zone && !strings.HasSuffix(name, "."+zone)) {
+				continue
+			}
+			update = updateRequest{Domain: name, Type: "AAAA", Values: []string{typed.AAAA.String()}, TTL: record.Header().Ttl}
+		case *dns.NS:
+			if allowed != nil || (name != zone && !strings.HasSuffix(name, "."+zone)) {
+				continue
+			}
+			update = updateRequest{Domain: name, Type: "NS", Values: []string{normalizeName(typed.Ns)}, TTL: record.Header().Ttl}
 		case *dns.TXT:
-			if !strings.HasSuffix(name, "."+zone) {
+			if name != zone && !strings.HasSuffix(name, "."+zone) {
 				continue
 			}
 			relative := strings.TrimSuffix(name, "."+zone)
-			if name == zone || (!strings.HasSuffix(relative, "._domainkey") && !isACMEName(name)) {
+			if allowed != nil && (name == zone || (!strings.HasSuffix(relative, "._domainkey") && !isACMEName(name))) {
 				continue
 			}
 			value := strings.Join(typed.Txt, "")
-			if isACMEName(name) {
-				key := name + "\x00TXT"
-				if seen[key] {
-					for index := range updates {
-						if updates[index].Domain == name && updates[index].Type == "TXT" {
-							updates[index].Values = append(updates[index].Values, value)
-							break
-						}
-					}
-					continue
-				}
+			if allowed == nil || isACMEName(name) {
 				update = updateRequest{Domain: name, Type: "TXT", Values: []string{value}, TTL: record.Header().Ttl}
 			} else {
 				update = updateRequest{Domain: name, Type: "TXT", Value: value, TTL: record.Header().Ttl}
@@ -488,6 +496,18 @@ func recordsFromZone(zoneData, zone string, allowed map[string]bool) ([]updateRe
 		}
 		key := update.Domain + "\x00" + update.Type
 		if seen[key] {
+			if len(update.Values) > 0 {
+				for index := range updates {
+					if updates[index].Domain == update.Domain && updates[index].Type == update.Type {
+						if updates[index].TTL != update.TTL {
+							return nil, count, fmt.Errorf("eligible RRset %s %s has inconsistent TTLs", update.Domain, update.Type)
+						}
+						updates[index].Values = append(updates[index].Values, update.Values...)
+						break
+					}
+				}
+				continue
+			}
 			return nil, count, fmt.Errorf("eligible RRset %s %s has multiple values", update.Domain, update.Type)
 		}
 		seen[key] = true

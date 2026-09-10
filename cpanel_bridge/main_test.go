@@ -18,10 +18,14 @@ func TestRecordsFromZoneFiltersBoilerplate(t *testing.T) {
 	zone := `$ORIGIN example.com.
 @ 300 IN SOA ns.example.net. hostmaster.example.net. 1 3600 600 86400 300
 @ 300 IN A 1.2.3.4
+@ 300 IN AAAA 2001:db8::1
+@ 300 IN NS ns.example.net.
 www 300 IN A 1.2.3.5
 shop 300 IN A 1.2.3.6
 cpanel 300 IN A 1.2.3.7
 mail 300 IN A 1.2.3.8
+blog 300 IN CNAME sites.example.net.
+autodiscover 300 IN CNAME service.example.net.
 default._domainkey 300 IN TXT "v=DKIM1; " "p=abc"
 @ 300 IN TXT "v=spf1 -all"
 _dmarc 300 IN TXT "v=DMARC1; p=none"
@@ -31,17 +35,18 @@ _acme-challenge 60 IN TXT "token-one"
 _acme-challenge.www 60 IN TXT "www-token"
 `
 	records, total, err := recordsFromZone(zone, "example.com", map[string]bool{
-		"example.com": true, "www.example.com": true, "shop.example.com": true,
+		"example.com": true, "www.example.com": true, "shop.example.com": true, "blog.example.com": true,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if total != 13 {
+	if total != 17 {
 		t.Fatalf("total records = %d", total)
 	}
 	want := []updateRequest{
 		{Domain: "_acme-challenge.example.com", Type: "TXT", Values: []string{"token-one", "token-two"}, TTL: 60},
 		{Domain: "_acme-challenge.www.example.com", Type: "TXT", Values: []string{"www-token"}, TTL: 60},
+		{Domain: "blog.example.com", Type: "CNAME", Value: "sites.example.net", TTL: 300},
 		{Domain: "default._domainkey.example.com", Type: "TXT", Value: "v=DKIM1; p=abc", TTL: 300},
 		{Domain: "example.com", Type: "A", Value: "1.2.3.4", TTL: 300},
 		{Domain: "shop.example.com", Type: "A", Value: "1.2.3.6", TTL: 300},
@@ -52,24 +57,38 @@ _acme-challenge.www 60 IN TXT "www-token"
 	}
 }
 
-func TestRecordsFromZoneRelaxedIncludesAllInZoneARecords(t *testing.T) {
+func TestRecordsFromZoneRelaxedIncludesSupportedRecords(t *testing.T) {
 	zone := `$ORIGIN example.com.
 @ 300 IN A 1.2.3.4
+@ 300 IN AAAA 2001:db8::2
+@ 300 IN AAAA 2001:db8::1
+@ 300 IN NS ns2.example.net.
+@ 300 IN NS ns1.example.net.
+@ 300 IN TXT "v=spf1 -all"
+@ 300 IN TXT "site-verification=abc"
 www 300 IN A 1.2.3.5
 mail 300 IN A 1.2.3.6
 cpanel 300 IN A 1.2.3.7
+alias 300 IN CNAME external.example.net.
 outside.example.net. 300 IN A 1.2.3.8
+outside.example.net. 300 IN AAAA 2001:db8::8
+outside.example.net. 300 IN NS ns.example.net.
 default._domainkey 300 IN TXT "v=DKIM1; p=abc"
-@ 300 IN TXT "v=spf1 -all"
+_dmarc 300 IN TXT "v=DMARC1; p=none"
 `
 	records, _, err := recordsFromZone(zone, "example.com", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	want := []updateRequest{
+		{Domain: "_dmarc.example.com", Type: "TXT", Values: []string{"v=DMARC1; p=none"}, TTL: 300},
+		{Domain: "alias.example.com", Type: "CNAME", Value: "external.example.net", TTL: 300},
 		{Domain: "cpanel.example.com", Type: "A", Value: "1.2.3.7", TTL: 300},
-		{Domain: "default._domainkey.example.com", Type: "TXT", Value: "v=DKIM1; p=abc", TTL: 300},
+		{Domain: "default._domainkey.example.com", Type: "TXT", Values: []string{"v=DKIM1; p=abc"}, TTL: 300},
 		{Domain: "example.com", Type: "A", Value: "1.2.3.4", TTL: 300},
+		{Domain: "example.com", Type: "AAAA", Values: []string{"2001:db8::1", "2001:db8::2"}, TTL: 300},
+		{Domain: "example.com", Type: "NS", Values: []string{"ns1.example.net", "ns2.example.net"}, TTL: 300},
+		{Domain: "example.com", Type: "TXT", Values: []string{"site-verification=abc", "v=spf1 -all"}, TTL: 300},
 		{Domain: "mail.example.com", Type: "A", Value: "1.2.3.6", TTL: 300},
 		{Domain: "www.example.com", Type: "A", Value: "1.2.3.5", TTL: 300},
 	}

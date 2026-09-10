@@ -137,7 +137,7 @@ Sibling addons in the same WHMCS installation may `require_once` `whmcs_dns.php`
 
 ### cPanel DNS bridge
 
-The optional `whmcs-dns-bridge` runs on a WHM/cPanel host and sends selected cPanel DNS updates to this addon. By default it imports only apex/configured-domain A records, `*._domainkey` TXT records, and `_acme-challenge` TXT RRsets used by ACME clients such as Let's Encrypt. ACME additions, replacements, and removals are synchronized; cPanel-generated service hosts, SPF, DMARC, DCV, MX, CNAME, SRV, NS, SOA, and other records are ignored.
+The optional `whmcs-dns-bridge` runs on a WHM/cPanel host and sends selected cPanel DNS updates to this addon. By default it imports only apex/configured-domain A and CNAME records, `*._domainkey` TXT records, and `_acme-challenge` TXT RRsets used by ACME clients such as Let's Encrypt. ACME additions, replacements, and removals are synchronized; cPanel-generated service hosts, SPF, DMARC, DCV, MX, SRV, NS, SOA, and other records are ignored.
 
 1. In **Addons → DNS Hosting → Automation API Keys**, create a key with `dns_write` scope for the required domains. The zones must already be enabled in WHMCS-DNS.
 2. Download the bridge archive matching the cPanel host architecture and extract it.
@@ -151,7 +151,7 @@ Synchronization is one-way from cPanel to WHMCS-DNS. Changes made in WHMCS-DNS a
 
 `process_synczones` is disabled by default. Enable it in the adjacent JSON configuration only when bulk/initial cPanel zone synchronization should be imported. Zones containing more than 250 total records are rejected before filtering.
 
-For migrations or accounts created outside WHMCS, set `relaxed_sync` to `true` in the bridge JSON configuration. Relaxed sync imports every A record inside the zone, including mail and cPanel service hosts, plus `*._domainkey` and `_acme-challenge` TXT records. Enable this only with a domain-scoped bridge key: the key controls which existing WHMCS-DNS zones can be updated.
+For migrations or accounts created outside WHMCS, set `relaxed_sync` to `true` in the bridge JSON configuration. Relaxed sync imports every in-zone A, AAAA, CNAME, NS, and TXT record, including mail and cPanel service hosts. Enable this only with a domain-scoped bridge key: the key controls which existing WHMCS-DNS zones can be updated.
 
 If WHMCS-DNS is the customer-facing editor, separately hide cPanel's Zone Editor through WHM Feature Manager. You may also disable the local nameserver daemon, but retain cPanel's DNS role and `dnsadmin` integration. These are deployment choices; the bridge does not modify cPanel settings.
 
@@ -172,8 +172,8 @@ From your server:
 
 ```bash
 cd /tmp
-wget https://github.com/moddengine/whmcs-dns/releases/download/v3.2.1/whmcs-dns-3.2.1.zip
-unzip whmcs-dns-3.2.1.zip
+wget https://github.com/moddengine/whmcs-dns/releases/download/v3.2.2/whmcs-dns-3.2.2.zip
+unzip whmcs-dns-3.2.2.zip
 cp -a whmcs_dns /path/to/whmcs/modules/addons/
 ```
 
