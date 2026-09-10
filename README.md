@@ -119,6 +119,29 @@ POST   /modules/addons/whmcs_dns/dns.php/sync/{fqdn}
 
 Zone synchronization is delegated to the configured PlexDNS provider. Providers without synchronization support return `501 unsupported_provider` without changing cached records.
 
+### Caddy ACME DNS provider
+
+Build Caddy with the WHMCS-DNS provider:
+
+```bash
+xcaddy build --with github.com/moddengine/whmcs-dns/caddy
+```
+
+Create an Automation API key with both `dns_read` and `dns_write` scopes for the required domains. Each zone must already be enabled in WHMCS-DNS. Then configure Caddy with the `dns.php` endpoint and key:
+
+```caddyfile
+example.com {
+    tls {
+        dns whmcs_dns {
+            endpoint {$WHMCS_DNS_ENDPOINT}
+            token {$WHMCS_DNS_TOKEN}
+        }
+    }
+}
+```
+
+The provider manages only the TXT records needed for ACME DNS verification. It sends the key in the `Auth-Key` header so it works when Apache does not pass through the `Authorization` header.
+
 Connect a website to an exact active WHMCS domain:
 
 ```http

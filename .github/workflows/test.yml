@@ -11,6 +11,16 @@ permissions:
   contents: read
 
 jobs:
+  caddy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: caddy/go.mod
+      - run: go test ./...
+        working-directory: caddy
+
   php:
     runs-on: ubuntu-latest
     steps:
