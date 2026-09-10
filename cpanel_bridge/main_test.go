@@ -26,6 +26,9 @@ default._domainkey 300 IN TXT "v=DKIM1; " "p=abc"
 @ 300 IN TXT "v=spf1 -all"
 _dmarc 300 IN TXT "v=DMARC1; p=none"
 _cpanel-dcv-test-record 300 IN TXT "temporary"
+_acme-challenge 60 IN TXT "token-two"
+_acme-challenge 60 IN TXT "token-one"
+_acme-challenge.www 60 IN TXT "www-token"
 `
 	records, total, err := recordsFromZone(zone, "example.com", map[string]bool{
 		"example.com": true, "www.example.com": true, "shop.example.com": true,
@@ -33,10 +36,12 @@ _cpanel-dcv-test-record 300 IN TXT "temporary"
 	if err != nil {
 		t.Fatal(err)
 	}
-	if total != 10 {
+	if total != 13 {
 		t.Fatalf("total records = %d", total)
 	}
 	want := []updateRequest{
+		{Domain: "_acme-challenge.example.com", Type: "TXT", Values: []string{"token-one", "token-two"}, TTL: 60},
+		{Domain: "_acme-challenge.www.example.com", Type: "TXT", Values: []string{"www-token"}, TTL: 60},
 		{Domain: "default._domainkey.example.com", Type: "TXT", Value: "v=DKIM1; p=abc", TTL: 300},
 		{Domain: "example.com", Type: "A", Value: "1.2.3.4", TTL: 300},
 		{Domain: "shop.example.com", Type: "A", Value: "1.2.3.6", TTL: 300},
@@ -140,8 +145,53 @@ func TestAcceptLogsSingleAndZoneSync(t *testing.T) {
 		Action: "SAVEZONE", DNSUniqID: "request-2",
 		Zones: []zoneInput{{Zone: "example.com", Data: "@ 300 IN A 1.2.3.4\n"}},
 	})
-	if !strings.Contains(output.String(), "DEBUG: action=SAVEZONE selected record=example.com type=A ttl=300") {
+	if !strings.Contains(output.String(), "DEBUG: action=SAVEZONE selected method=PUT record=example.com type=A ttl=300") {
 		t.Fatalf("debug record output missing: %q", output.String())
+	}
+}
+
+func TestACMECreateAndDelete(t *testing.T) {
+	var methods []string
+	var values [][]string
+	client := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		methods = append(methods, request.Method)
+		if request.URL.Path != "/modules/addons/whmcs_dns/dns.php/record/_acme-challenge.example.com/TXT" {
+			t.Errorf("path = %s", request.URL.Path)
+		}
+		var rrset struct {
+			Values []string `json:"values"`
+		}
+		_ = json.NewDecoder(request.Body).Decode(&rrset)
+		values = append(values, rrset.Values)
+		return &http.Response{StatusCode: http.StatusNoContent, Body: io.NopCloser(strings.NewReader(""))}, nil
+	})}
+	s := &spool{
+		dir: t.TempDir(), wake: make(chan struct{}, 1), client: client,
+		cfg:    config{Endpoint: "https://example.invalid/modules/addons/whmcs_dns/dns.php", Token: "secret", RelaxedSync: true},
+		logger: logForTest(t),
+	}
+	if err := s.init(); err != nil {
+		t.Fatal(err)
+	}
+	created := s.accept(socketRequest{Action: "SAVEZONE", DNSUniqID: "create", Zones: []zoneInput{{
+		Zone: "example.com",
+		Data: "_acme-challenge 60 IN TXT \"token-two\"\n_acme-challenge 60 IN TXT \"token-one\"\n",
+	}}})
+	if !created.OK || created.Queued != 1 || !s.processOne(time.Now()) {
+		t.Fatalf("create response = %+v", created)
+	}
+	deleted := s.accept(socketRequest{Action: "SAVEZONE", DNSUniqID: "delete", Zones: []zoneInput{{
+		Zone: "example.com", Data: "",
+	}}})
+	if !deleted.OK || deleted.Queued != 1 || !s.processOne(time.Now()) {
+		t.Fatalf("delete response = %+v", deleted)
+	}
+	if strings.Join(methods, ",") != "PUT,DELETE" || strings.Join(values[0], ",") != "token-one,token-two" {
+		t.Fatalf("requests = %v values = %v", methods, values)
+	}
+	state, err := os.ReadDir(filepath.Join(s.dir, "acme"))
+	if err != nil || len(state) != 0 {
+		t.Fatalf("ACME state remains after deletion: %v, %v", state, err)
 	}
 }
 

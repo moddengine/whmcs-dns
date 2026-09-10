@@ -63,14 +63,16 @@ type socketResponse struct {
 }
 
 type updateRequest struct {
-	Domain string `json:"domain"`
-	Type   string `json:"type"`
-	Value  string `json:"value"`
-	TTL    uint32 `json:"ttl"`
+	Domain string   `json:"domain"`
+	Type   string   `json:"type"`
+	Value  string   `json:"value"`
+	Values []string `json:"values,omitempty"`
+	TTL    uint32   `json:"ttl"`
 }
 
 type job struct {
 	ID          string        `json:"id"`
+	Method      string        `json:"method,omitempty"`
 	Request     updateRequest `json:"request"`
 	Attempts    int           `json:"attempts"`
 	NextAttempt time.Time     `json:"next_attempt,omitempty"`
@@ -234,7 +236,7 @@ func peerUID(conn *net.UnixConn) (uint32, error) {
 }
 
 func (s *spool) init() error {
-	for _, name := range []string{"ready", "retry", "inflight", "dead"} {
+	for _, name := range []string{"ready", "retry", "inflight", "dead", "acme"} {
 		if err := os.MkdirAll(filepath.Join(s.dir, name), 0700); err != nil {
 			return err
 		}
@@ -313,12 +315,21 @@ func (s *spool) accept(request socketRequest) socketResponse {
 		if err != nil {
 			return socketResponse{Error: err.Error()}
 		}
+		deletions, err := s.acmeDeletions(zone, updates)
+		if err != nil {
+			return socketResponse{Retryable: true, Error: err.Error()}
+		}
+		updates = append(updates, deletions...)
 		s.logger.Printf("action=%s zone=%s selected=%d total=%d", action, zone, len(updates), total)
 		for _, update := range updates {
-			s.debugf("action=%s selected record=%s type=%s ttl=%d", action, update.Domain, update.Type, update.TTL)
+			method := http.MethodPut
+			if update.Value == "" && len(update.Values) == 0 {
+				method = http.MethodDelete
+			}
+			s.debugf("action=%s selected method=%s record=%s type=%s ttl=%d", action, method, update.Domain, update.Type, update.TTL)
 			identity := update.Domain + "\x00" + update.Type
 			sum := sha256.Sum256([]byte(identity))
-			jobs = append(jobs, job{ID: hex.EncodeToString(sum[:]), Request: update})
+			jobs = append(jobs, job{ID: hex.EncodeToString(sum[:]), Method: method, Request: update})
 		}
 	}
 
@@ -453,10 +464,25 @@ func recordsFromZone(zoneData, zone string, allowed map[string]bool) ([]updateRe
 				continue
 			}
 			relative := strings.TrimSuffix(name, "."+zone)
-			if name == zone || !strings.HasSuffix(relative, "._domainkey") {
+			if name == zone || (!strings.HasSuffix(relative, "._domainkey") && !isACMEName(name)) {
 				continue
 			}
-			update = updateRequest{Domain: name, Type: "TXT", Value: strings.Join(typed.Txt, ""), TTL: record.Header().Ttl}
+			value := strings.Join(typed.Txt, "")
+			if isACMEName(name) {
+				key := name + "\x00TXT"
+				if seen[key] {
+					for index := range updates {
+						if updates[index].Domain == name && updates[index].Type == "TXT" {
+							updates[index].Values = append(updates[index].Values, value)
+							break
+						}
+					}
+					continue
+				}
+				update = updateRequest{Domain: name, Type: "TXT", Values: []string{value}, TTL: record.Header().Ttl}
+			} else {
+				update = updateRequest{Domain: name, Type: "TXT", Value: value, TTL: record.Header().Ttl}
+			}
 		default:
 			continue
 		}
@@ -473,7 +499,60 @@ func recordsFromZone(zoneData, zone string, allowed map[string]bool) ([]updateRe
 	sort.Slice(updates, func(i, j int) bool {
 		return updates[i].Domain+"\x00"+updates[i].Type < updates[j].Domain+"\x00"+updates[j].Type
 	})
+	for index := range updates {
+		sort.Strings(updates[index].Values)
+	}
 	return updates, count, nil
+}
+
+func isACMEName(name string) bool {
+	return strings.HasPrefix(normalizeName(name), "_acme-challenge.")
+}
+
+func (s *spool) acmeDeletions(zone string, updates []updateRequest) ([]updateRequest, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	current := make(map[string]bool)
+	for _, update := range updates {
+		if isACMEName(update.Domain) {
+			current[update.Domain] = true
+		}
+	}
+
+	known := make(map[string]bool)
+	for _, queue := range []string{"acme", "ready", "retry", "inflight"} {
+		entries, err := os.ReadDir(filepath.Join(s.dir, queue))
+		if err != nil {
+			return nil, err
+		}
+		for _, entry := range entries {
+			data, err := os.ReadFile(filepath.Join(s.dir, queue, entry.Name()))
+			if os.IsNotExist(err) {
+				continue
+			}
+			if err != nil {
+				return nil, err
+			}
+			var queued job
+			if json.Unmarshal(data, &queued) != nil || queued.Method == http.MethodDelete {
+				continue
+			}
+			name := normalizeName(queued.Request.Domain)
+			if isACMEName(name) && strings.HasSuffix(name, "."+zone) {
+				known[name] = true
+			}
+		}
+	}
+
+	deletions := make([]updateRequest, 0)
+	for name := range known {
+		if !current[name] {
+			deletions = append(deletions, updateRequest{Domain: name, Type: "TXT"})
+		}
+	}
+	sort.Slice(deletions, func(i, j int) bool { return deletions[i].Domain < deletions[j].Domain })
+	return deletions, nil
 }
 
 func (s *spool) enqueue(jobs []job) error {
@@ -565,40 +644,58 @@ func (s *spool) processOne(now time.Time) bool {
 		_ = os.Rename(path, s.deadPath(filepath.Base(path)))
 		return true
 	}
-	if err := s.deliver(queued); err == nil {
+	err = s.deliver(queued)
+	if err == nil {
+		err = s.updateACMEState(queued)
+	}
+	if err == nil {
 		if err := os.Remove(path); err != nil {
 			s.logger.Printf("remove delivered job %s: %v", queued.ID, err)
 		}
 		s.logger.Printf("delivered job=%s record=%s type=%s", queued.ID, queued.Request.Domain, queued.Request.Type)
 		return true
-	} else {
-		s.mu.Lock()
-		defer s.mu.Unlock()
-		queued.Attempts++
-		queued.LastError = truncate(err.Error(), 2000)
-		if _, statErr := os.Stat(filepath.Join(s.dir, "ready", filepath.Base(path))); statErr == nil {
-			_ = os.Remove(path)
-			s.logger.Printf("job %s superseded by a newer update", queued.ID)
-			return true
-		}
-		if queued.Attempts >= maxAttempts {
-			destination := s.deadPath(filepath.Base(path))
-			if moveErr := moveJob(path, destination, queued); moveErr != nil {
-				s.logger.Printf("dead-letter job %s: %v", queued.ID, moveErr)
-				return false
-			}
-			s.logger.Printf("job %s dead-lettered at %s: %v", queued.ID, destination, err)
-			return true
-		}
-		queued.NextAttempt = now.Add(retryDelay(queued.Attempts))
-		destination := filepath.Join(s.dir, "retry", filepath.Base(path))
-		if err := moveJob(path, destination, queued); err != nil {
-			s.logger.Printf("queue retry for job %s: %v", queued.ID, err)
-			return false
-		}
-		s.logger.Printf("job %s attempt %d failed: %s", queued.ID, queued.Attempts, queued.LastError)
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	queued.Attempts++
+	queued.LastError = truncate(err.Error(), 2000)
+	if _, statErr := os.Stat(filepath.Join(s.dir, "ready", filepath.Base(path))); statErr == nil {
+		_ = os.Remove(path)
+		s.logger.Printf("job %s superseded by a newer update", queued.ID)
 		return true
 	}
+	if queued.Attempts >= maxAttempts {
+		destination := s.deadPath(filepath.Base(path))
+		if moveErr := moveJob(path, destination, queued); moveErr != nil {
+			s.logger.Printf("dead-letter job %s: %v", queued.ID, moveErr)
+			return false
+		}
+		s.logger.Printf("job %s dead-lettered at %s: %v", queued.ID, destination, err)
+		return true
+	}
+	queued.NextAttempt = now.Add(retryDelay(queued.Attempts))
+	destination := filepath.Join(s.dir, "retry", filepath.Base(path))
+	if err := moveJob(path, destination, queued); err != nil {
+		s.logger.Printf("queue retry for job %s: %v", queued.ID, err)
+		return false
+	}
+	s.logger.Printf("job %s attempt %d failed: %s", queued.ID, queued.Attempts, queued.LastError)
+	return true
+}
+
+func (s *spool) updateACMEState(queued job) error {
+	if !isACMEName(queued.Request.Domain) {
+		return nil
+	}
+	statePath := filepath.Join(s.dir, "acme", queued.ID+".json")
+	if queued.Method != http.MethodDelete {
+		return writeJSON(statePath, queued)
+	}
+	if err := os.Remove(statePath); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
 }
 
 func (s *spool) claim(now time.Time) string {
@@ -646,14 +743,22 @@ func (s *spool) deadPath(base string) string {
 }
 
 func (s *spool) deliver(queued job) error {
+	method := queued.Method
+	if method == "" {
+		method = http.MethodPut
+	}
 	ttl := queued.Request.TTL
 	if ttl == 0 {
 		ttl = 3600
 	}
+	values := queued.Request.Values
+	if len(values) == 0 && queued.Request.Value != "" {
+		values = []string{queued.Request.Value}
+	}
 	body, err := json.Marshal(struct {
 		TTL    uint32   `json:"ttl"`
 		Values []string `json:"values"`
-	}{TTL: ttl, Values: []string{queued.Request.Value}})
+	}{TTL: ttl, Values: values})
 	if err != nil {
 		return err
 	}
@@ -661,8 +766,8 @@ func (s *spool) deliver(queued job) error {
 	if err != nil {
 		return err
 	}
-	s.logger.Printf("delivering job=%s method=PUT record=%s type=%s ttl=%d attempt=%d", queued.ID, queued.Request.Domain, queued.Request.Type, ttl, queued.Attempts+1)
-	request, err := http.NewRequest(http.MethodPut, endpoint, bytes.NewReader(body))
+	s.logger.Printf("delivering job=%s method=%s record=%s type=%s ttl=%d attempt=%d", queued.ID, method, queued.Request.Domain, queued.Request.Type, ttl, queued.Attempts+1)
+	request, err := http.NewRequest(method, endpoint, bytes.NewReader(body))
 	if err != nil {
 		return err
 	}
