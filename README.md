@@ -180,6 +180,8 @@ If WHMCS-DNS is the customer-facing editor, separately hide cPanel's Zone Editor
 
 ## WHMCS Module Update instructions
 
+Release ZIPs include a `whmcs.update-manifest.json` for automated installation and rollback with [WHMCS Plugin Updater](https://github.com/moddengine/whmcs-plugin-updater).
+
 To update the DNS hosting module to the latest version, download the newest release and replace the existing module files.
 
 ### Manual update

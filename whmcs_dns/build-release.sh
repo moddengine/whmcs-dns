@@ -8,7 +8,8 @@ output_dir=$(cd -- "$output_dir" && pwd)
 
 # This is PHP code, not a shell expression.
 # shellcheck disable=SC2016
-version=$(php -r '$m=json_decode(file_get_contents($argv[1]), true, flags: JSON_THROW_ON_ERROR); echo $m["version"];' "$module_dir/whmcs.json")
+version=${2:-$(php -r '$m=json_decode(file_get_contents($argv[1]), true, flags: JSON_THROW_ON_ERROR); echo $m["version"];' "$module_dir/whmcs.json")}
+[[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "invalid release version: $version" >&2; exit 1; }
 release_tmp=$(mktemp -d "${TMPDIR:-/tmp}/whmcs-dns-release.XXXXXX")
 trap 'rm -rf -- "$release_tmp"' EXIT
 
@@ -31,6 +32,11 @@ cp -a -- \
     "$module_dir/whmcs.json" \
     "$module_dir/whmcs_dns.php" \
     "$install_dir/"
+
+# This is PHP code, not a shell expression.
+# shellcheck disable=SC2016
+php -r '$p=$argv[1]; $m=json_decode(file_get_contents($p), true, flags: JSON_THROW_ON_ERROR); $m["version"]=$argv[2]; file_put_contents($p, json_encode($m, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR).PHP_EOL);' "$install_dir/whmcs.json" "$version"
+sed -Ei "s/'version'[[:space:]]*=>[[:space:]]*'[0-9]+\.[0-9]+\.[0-9]+'/'version' => '$version'/" "$install_dir/whmcs_dns.php"
 
 composer install \
     --working-dir="$install_dir" \

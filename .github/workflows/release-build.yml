@@ -17,6 +17,19 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Set release metadata
+        shell: bash
+        run: |
+          if [[ "$GITHUB_REF_TYPE" == "tag" ]]; then
+            [[ "$GITHUB_REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+            version=${GITHUB_REF_NAME#v}
+          else
+            version=$(jq -r .version whmcs_dns/whmcs.json)
+          fi
+          [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+          echo "ADDON_ASSET=whmcs-dns-$version.zip" >> "$GITHUB_ENV"
+
       - name: Setup PHP
         uses: shivammathur/setup-php@v2
         with:
@@ -36,7 +49,24 @@ jobs:
         run: composer install --working-dir=whmcs_dns --no-interaction --no-progress --prefer-dist
 
       - name: Build addon ZIP
-        run: whmcs_dns/build-release.sh "$GITHUB_WORKSPACE/dist"
+        run: whmcs_dns/build-release.sh "$GITHUB_WORKSPACE/dist" "$VERSION"
+
+      - name: Verify addon update metadata
+        shell: bash
+        run: |
+          archive="dist/$ADDON_ASSET"
+          unzip -t "$archive"
+          unzip -p "$archive" whmcs_dns/whmcs.update-manifest.json | jq -e \
+            --arg version "$VERSION" \
+            --arg repository "$GITHUB_REPOSITORY" \
+            --arg asset "$ADDON_ASSET" \
+            '.schema == 1
+              and .package == $repository
+              and .component == {"type":"addon","name":"whmcs_dns"}
+              and .version == $version
+              and .github.repository == $repository
+              and ((.github.asset | gsub("\\{version\\}"; $version)) == $asset)' >/dev/null
+          unzip -p "$archive" whmcs_dns/whmcs.json | jq -e --arg version "$VERSION" '.version == $version' >/dev/null
 
       - name: Build cPanel bridge
         run: cpanel_bridge/build-release.sh "$GITHUB_WORKSPACE/dist"
