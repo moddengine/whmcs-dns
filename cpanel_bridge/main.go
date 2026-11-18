@@ -485,7 +485,10 @@ func recordsFromZone(zoneData, zone string, allowed map[string]bool) ([]updateRe
 			if allowed != nil && (name == zone || (!strings.HasSuffix(relative, "._domainkey") && !isACMEName(name))) {
 				continue
 			}
-			value := strings.Join(typed.Txt, "")
+			value, err := txtRecordValue(typed)
+			if err != nil {
+				return nil, count, fmt.Errorf("decode TXT record %s: %w", name, err)
+			}
 			if allowed == nil || isACMEName(name) {
 				update = updateRequest{Domain: name, Type: "TXT", Values: []string{value}, TTL: record.Header().Ttl}
 			} else {
@@ -523,6 +526,23 @@ func recordsFromZone(zoneData, zone string, allowed map[string]bool) ([]updateRe
 		sort.Strings(updates[index].Values)
 	}
 	return updates, count, nil
+}
+
+func txtRecordValue(record *dns.TXT) (string, error) {
+	// The parser retains presentation escapes; DNS packing decodes them to literal bytes.
+	wire := make([]byte, dns.Len(record))
+	end, err := dns.PackRR(record, wire, 0, nil, false)
+	if err != nil {
+		return "", err
+	}
+	data := wire[end-int(record.Hdr.Rdlength) : end]
+	var value strings.Builder
+	for len(data) > 0 {
+		size := int(data[0])
+		value.Write(data[1 : 1+size])
+		data = data[1+size:]
+	}
+	return value.String(), nil
 }
 
 func isACMEName(name string) bool {

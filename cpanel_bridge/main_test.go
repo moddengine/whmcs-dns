@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
@@ -94,6 +95,42 @@ _dmarc 300 IN TXT "v=DMARC1; p=none"
 	}
 	if encoded, expected := mustJSON(records), mustJSON(want); encoded != expected {
 		t.Fatalf("records = %s, want %s", encoded, expected)
+	}
+}
+
+func TestRecordsFromZoneDecodesTXTEscapes(t *testing.T) {
+	for _, relaxed := range []bool{false, true} {
+		for _, test := range []struct {
+			name, text, want string
+		}{
+			{"semicolon", `"v=DKIM1\; " "p=abc"`, "v=DKIM1; p=abc"},
+			{"decimal", `"v=DKIM1\059 p=abc"`, "v=DKIM1; p=abc"},
+			{"literal semicolon", `"v=DKIM1; p=abc"`, "v=DKIM1; p=abc"},
+			{"backslash and quote", `"path=one\\two\; note=\"ok\""`, `path=one\two; note="ok"`},
+			{"literal escape", `"keep=\\059;"`, `keep=\059;`},
+			{"chunk boundary", `"keep=\\" "059;"`, `keep=\059;`},
+			{"decimal byte", `"value=\065"`, "value=A"},
+			{"long DKIM", `"v=DKIM1\; p=` + strings.Repeat("a", 300) + `"`, "v=DKIM1; p=" + strings.Repeat("a", 300)},
+		} {
+			t.Run(fmt.Sprintf("%s/relaxed=%t", test.name, relaxed), func(t *testing.T) {
+				allowed := map[string]bool{"example.com": true}
+				if relaxed {
+					allowed = nil
+				}
+				records, _, err := recordsFromZone("default._domainkey 300 IN TXT "+test.text+"\n", "example.com", allowed)
+				if err != nil {
+					t.Fatal(err)
+				}
+				want := updateRequest{Domain: "default._domainkey.example.com", Type: "TXT", Value: test.want, TTL: 300}
+				if relaxed {
+					want.Value = ""
+					want.Values = []string{test.want}
+				}
+				if encoded, expected := mustJSON(records), mustJSON([]updateRequest{want}); encoded != expected {
+					t.Fatalf("records = %s, want %s", encoded, expected)
+				}
+			})
+		}
 	}
 }
 
